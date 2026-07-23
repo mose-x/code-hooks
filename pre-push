@@ -1,0 +1,34 @@
+#!/usr/bin/env bash
+# pre-push: enforce push policy.
+#   - only the 'main' branch may be pushed
+#   - reject if any commit being pushed contains forbidden tokens:
+#     traeagent, Co-authored-by
+set -euo pipefail
+
+allowed_branch="main"
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    # remote_ref looks like refs/heads/<branch>.
+    branch="${remote_ref#refs/heads/}"
+    if [ "$branch" != "$allowed_branch" ]; then
+        echo "pre-push: reject" >&2
+        echo "  pushing to branch '$branch', only '$allowed_branch' is allowed" >&2
+        exit 1
+    fi
+
+    # Scan every commit in the push range for forbidden tokens.
+    # remote_sha may be all-zeros for a new branch; fall back to scanning
+    # the whole local history of the branch in that case.
+    range="$remote_sha..$local_sha"
+    if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
+        range="$local_sha"
+    fi
+
+    if git log --format='%B' "$range" | grep -niE "traeagent|co-authored-by" >/dev/null 2>&1; then
+        echo "pre-push: reject" >&2
+        echo "  pushed commits contain a forbidden token (traeagent / Co-authored-by)" >&2
+        exit 1
+    fi
+done
+
+exit 0

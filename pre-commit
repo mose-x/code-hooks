@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# pre-commit: enforce author/committer email.
+# Only mose-zm <602187256@qq.com> is allowed.
+set -euo pipefail
+
+required_email="602187256@qq.com"
+
+author_email=$(git config user.email)
+if [ "$author_email" != "$required_email" ]; then
+    echo "pre-commit: reject" >&2
+    echo "  user.email is '$author_email', expected '$required_email'" >&2
+    echo "  fix: git config user.email '$required_email'" >&2
+    exit 1
+fi
+exit 0
