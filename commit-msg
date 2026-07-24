@@ -3,6 +3,7 @@
 #   - subject line <= 100 chars
 #   - subject line does not end with '.'
 #   - no forbidden tokens anywhere: traeagent, Co-authored-by
+#   - message must be English only (pure ASCII): no CJK, emoji, curly quotes, ...
 set -euo pipefail
 
 msg_file="$1"
@@ -41,6 +42,17 @@ esac
 if grep -niE "traeagent|co-authored-by" "$msg_file" >/dev/null 2>&1; then
     echo "commit-msg: reject" >&2
     echo "  message contains a forbidden token (traeagent / Co-authored-by)" >&2
+    exit 1
+fi
+
+# Rule 4: message must be English only (pure ASCII).
+# Reject any non-ASCII byte (CJK, emoji, curly quotes, arrows, ellipsis).
+# LC_ALL=C forces byte-mode so a single multi-byte UTF-8 char is flagged.
+# Strip git comment lines first so they don't affect the check.
+if sed '/^#/d' "$msg_file" | LC_ALL=C tr -d '\000-\177' | grep -q .; then
+    echo "commit-msg: reject" >&2
+    echo "  message contains non-ASCII characters; English (ASCII) only:" >&2
+    sed '/^#/d' "$msg_file" | LC_ALL=C grep -nE '[^ -~]' | head -1 | sed 's/^/  /' >&2
     exit 1
 fi
 
