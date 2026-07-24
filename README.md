@@ -3,7 +3,7 @@
 Private repo hosting git hooks for code repos (primary consumer: [mose-x/nvm-rust](https://github.com/mose-x/nvm-rust)).
 
 The hooks themselves (`pre-commit`, `commit-msg`, `pre-push`) are never committed
-into the nvm-rust repo; instead each sandbox/workdir points at this repo via
+into the consumer repo; instead each sandbox/workdir points at this repo via
 `core.hooksPath`. A bootstrap script (`setup-code-hooks.sh`) clones this repo and
 wires up the workdir in one shot.
 
@@ -52,7 +52,7 @@ Replace `/workspace` with the actual target workdir path if different.
 - `~/.git-credentials` (the GitHub PAT) and `/root/.code-hooks/` live under
   `/root` and do not persist across sandbox resets; re-run the bootstrap
   above at the start of each new session.
-- The hooks repo itself is pushed using the same PAT / identity as nvm-rust.
+- The hooks repo itself is pushed using the same PAT / identity as the consumer repos.
 - `--no-verify` bypasses local hooks entirely (git design). The pre-push email
   scan is the last local checkpoint; for true enforcement, add GitHub branch
   protection + required status checks on the remote.
