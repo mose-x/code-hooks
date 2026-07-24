@@ -6,7 +6,7 @@
 # Usage:
 #   bash /root/.nvm-hooks/setup-nvm-hooks.sh [path-to-nvm-rust-workdir]
 #   # or, from a fresh sandbox with nothing cloned yet:
-#   curl -fsSL https://raw.githubusercontent.com/mose-x/nvm-rust-hooks/main/setup-nvm-hooks.sh | bash -s -- /workspace
+#   curl -fsSL https://raw.githubusercontent.com/mose-x/code-hooks/main/setup-nvm-hooks.sh | bash -s -- /workspace
 set -euo pipefail
 
 HOOKS_DIR="/root/.nvm-hooks"
@@ -16,7 +16,7 @@ WORKDIR="${1:-/workspace}"
 # curl-pipe-bash bootstrap path), clone the repo first so the hook files
 # land on disk.
 if [ ! -d "$HOOKS_DIR/.git" ]; then
-    git clone https://github.com/mose-x/nvm-rust-hooks.git "$HOOKS_DIR"
+    git clone https://github.com/mose-x/code-hooks.git "$HOOKS_DIR"
 else
     git -C "$HOOKS_DIR" pull --ff-only
 fi

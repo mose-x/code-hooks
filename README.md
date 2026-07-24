@@ -1,4 +1,4 @@
-# nvm-rust-hooks
+# code-hooks
 
 Private repo hosting git hooks for [mose-x/nvm-rust](https://github.com/mose-x/nvm-rust).
 
@@ -37,7 +37,7 @@ The sandbox network allows `git clone` from `github.com` (but blocks
 `raw.githubusercontent.com`), so bootstrap with two commands:
 
 ```bash
-git clone https://github.com/mose-x/nvm-rust-hooks.git /root/.nvm-hooks && \
+git clone https://github.com/mose-x/code-hooks.git /root/.nvm-hooks && \
 bash /root/.nvm-hooks/setup-nvm-hooks.sh /workspace
 ```
 
