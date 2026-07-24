@@ -1,15 +1,74 @@
 #!/usr/bin/env bash
-# pre-commit: enforce author/committer email.
-# Only mose-zm <602187256@qq.com> is allowed.
+# pre-commit: enforce identity AND code quality.
+#
+# Identity (always on):
+#   - author    email == 602187256@qq.com  (via `git config user.email`)
+#   - committer email == 602187256@qq.com  (via GIT_COMMITTER_EMAIL override)
+#
+# The committer check closes a real bypass: `GIT_COMMITTER_EMAIL=x@y git commit`
+# leaves author at the configured email but writes a different committer email
+# into the commit object, which then shows up as a second identity on GitHub.
+# `git config user.email` only controls the author; the committer comes from
+# GIT_COMMITTER_EMAIL / GIT_COMMITTER_NAME env vars when set.
+#
+# Code quality (only when src/**/*.rs is staged):
+#   - `cargo fmt --check`          (formatting)
+#   - `cargo clippy -D warnings`   (lints, deny warnings)
+#
+# The cargo checks are gated on .rs changes so docs-only / hook-only commits
+# are not penalised with a multi-second compile.
 set -euo pipefail
 
 required_email="602187256@qq.com"
+required_name="mose-zm"
 
 author_email=$(git config user.email)
 if [ "$author_email" != "$required_email" ]; then
     echo "pre-commit: reject" >&2
-    echo "  user.email is '$author_email', expected '$required_email'" >&2
+    echo "  user.email (author) is '$author_email', expected '$required_email'" >&2
     echo "  fix: git config user.email '$required_email'" >&2
     exit 1
 fi
+
+# GIT_COMMITTER_EMAIL overrides the configured email for the committer field.
+# When unset, git falls back to user.email, so we only need to check when it
+# IS set -- but if it is set and disagrees, that is an identity split.
+committer_email="${GIT_COMMITTER_EMAIL:-}"
+if [ -n "$committer_email" ] && [ "$committer_email" != "$required_email" ]; then
+    echo "pre-commit: reject" >&2
+    echo "  GIT_COMMITTER_EMAIL is '$committer_email', expected '$required_email'" >&2
+    echo "  Either unset GIT_COMMITTER_EMAIL or set it to '$required_email'." >&2
+    echo "  Leaving it set to a different address creates a split identity" >&2
+    echo "  (author=qq.com, committer=other) on GitHub." >&2
+    exit 1
+fi
+
+# Same for the name, to keep the contributor display consistent.
+committer_name="${GIT_COMMITTER_NAME:-}"
+if [ -n "$committer_name" ] && [ "$committer_name" != "$required_name" ]; then
+    echo "pre-commit: reject" >&2
+    echo "  GIT_COMMITTER_NAME is '$committer_name', expected '$required_name'" >&2
+    exit 1
+fi
+
+# --- Code quality: only when Rust sources are staged. ---
+# `--cached --name-only` lists staged files; we look for any .rs under src/.
+# We specifically want .rs files so a README-only / hook-only commit skips
+# cargo entirely (avoids a multi-second compile for trivial commits).
+if git diff --cached --name-only --diff-filter=ACMR | grep -q '^src/.*\.rs$'; then
+    echo "pre-commit: running cargo fmt --check (staged .rs files detected)" >&2
+    if ! cargo fmt --check; then
+        echo "pre-commit: reject" >&2
+        echo "  cargo fmt found unformatted code. Run 'cargo fmt' and re-stage." >&2
+        exit 1
+    fi
+
+    echo "pre-commit: running cargo clippy --all-targets -- -D warnings" >&2
+    if ! cargo clippy --all-targets -- -D warnings; then
+        echo "pre-commit: reject" >&2
+        echo "  cargo clippy reported warnings. Fix them and re-stage." >&2
+        exit 1
+    fi
+fi
+
 exit 0
