@@ -4,7 +4,7 @@ Private repo hosting git hooks for [mose-x/nvm-rust](https://github.com/mose-x/n
 
 The hooks themselves (`pre-commit`, `commit-msg`, `pre-push`) are never committed
 into the nvm-rust repo; instead each sandbox/workdir points at this repo via
-`core.hooksPath`. A bootstrap script (`setup-nvm-hooks.sh`) clones this repo and
+`core.hooksPath`. A bootstrap script (`setup-code-hooks.sh`) clones this repo and
 wires up the workdir in one shot.
 
 ## Hooks
@@ -38,7 +38,7 @@ The sandbox network allows `git clone` from `github.com` (but blocks
 
 ```bash
 git clone https://github.com/mose-x/code-hooks.git /root/.nvm-hooks && \
-bash /root/.nvm-hooks/setup-nvm-hooks.sh /workspace
+bash /root/.nvm-hooks/setup-code-hooks.sh /workspace
 ```
 
 The script is idempotent -- re-running just does `pull --ff-only` and refreshes

@@ -4,9 +4,9 @@
 # Idempotent: safe to re-run. Reuses credential.helper=store if present.
 #
 # Usage:
-#   bash /root/.nvm-hooks/setup-nvm-hooks.sh [path-to-nvm-rust-workdir]
+#   bash /root/.nvm-hooks/setup-code-hooks.sh [path-to-nvm-rust-workdir]
 #   # or, from a fresh sandbox with nothing cloned yet:
-#   curl -fsSL https://raw.githubusercontent.com/mose-x/code-hooks/main/setup-nvm-hooks.sh | bash -s -- /workspace
+#   curl -fsSL https://raw.githubusercontent.com/mose-x/code-hooks/main/setup-code-hooks.sh | bash -s -- /workspace
 set -euo pipefail
 
 HOOKS_DIR="/root/.nvm-hooks"
