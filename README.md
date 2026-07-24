@@ -1,6 +1,6 @@
 # code-hooks
 
-Private repo hosting git hooks for [mose-x/nvm-rust](https://github.com/mose-x/nvm-rust).
+Private repo hosting git hooks for code repos (primary consumer: [mose-x/nvm-rust](https://github.com/mose-x/nvm-rust)).
 
 The hooks themselves (`pre-commit`, `commit-msg`, `pre-push`) are never committed
 into the nvm-rust repo; instead each sandbox/workdir points at this repo via
@@ -37,19 +37,19 @@ The sandbox network allows `git clone` from `github.com` (but blocks
 `raw.githubusercontent.com`), so bootstrap with two commands:
 
 ```bash
-git clone https://github.com/mose-x/code-hooks.git /root/.nvm-hooks && \
-bash /root/.nvm-hooks/setup-code-hooks.sh /workspace
+git clone https://github.com/mose-x/code-hooks.git /root/.code-hooks && \
+bash /root/.code-hooks/setup-code-hooks.sh /workspace
 ```
 
 The script is idempotent -- re-running just does `pull --ff-only` and refreshes
 the workdir config. It also pins `user.name=mose-zm` / `user.email=602187256@qq.com`
 into the workdir so `pre-commit` is satisfied without any manual `git config`.
 
-Replace `/workspace` with the actual nvm-rust workdir path if different.
+Replace `/workspace` with the actual target workdir path if different.
 
 ## Notes
 
-- `~/.git-credentials` (the GitHub PAT) and `/root/.nvm-hooks/` live under
+- `~/.git-credentials` (the GitHub PAT) and `/root/.code-hooks/` live under
   `/root` and do not persist across sandbox resets; re-run the bootstrap
   above at the start of each new session.
 - The hooks repo itself is pushed using the same PAT / identity as nvm-rust.

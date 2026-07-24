@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# Bootstrap git hooks for an nvm-rust workdir from this private hooks repo.
+# Bootstrap git hooks for a target workdir from this private hooks repo.
 #
 # Idempotent: safe to re-run. Reuses credential.helper=store if present.
 #
 # Usage:
-#   bash /root/.nvm-hooks/setup-code-hooks.sh [path-to-nvm-rust-workdir]
+#   bash /root/.code-hooks/setup-code-hooks.sh [path-to-target-workdir]
 #   # or, from a fresh sandbox with nothing cloned yet:
 #   curl -fsSL https://raw.githubusercontent.com/mose-x/code-hooks/main/setup-code-hooks.sh | bash -s -- /workspace
 set -euo pipefail
 
-HOOKS_DIR="/root/.nvm-hooks"
+HOOKS_DIR="/root/.code-hooks"
 WORKDIR="${1:-/workspace}"
 
-# If this script is running but /root/.nvm-hooks doesn't exist yet (the
+# If this script is running but /root/.code-hooks doesn't exist yet (the
 # curl-pipe-bash bootstrap path), clone the repo first so the hook files
 # land on disk.
 if [ ! -d "$HOOKS_DIR/.git" ]; then
@@ -21,7 +21,7 @@ else
     git -C "$HOOKS_DIR" pull --ff-only
 fi
 
-# Point the nvm-rust repo at the hooks directory.
+# Point the target repo at the hooks directory.
 git -C "$WORKDIR" config core.hooksPath "$HOOKS_DIR"
 
 # Also pin the author identity in the workdir so pre-commit is happy without
