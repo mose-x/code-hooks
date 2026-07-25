@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # pre-push: enforce push policy.
-#   - only the 'main' branch may be pushed
+#   - only the 'dev' branch may be pushed (main is protected via GitHub
+#     branch protection + required status checks; land changes through PR)
 #   - reject if any commit being pushed contains forbidden tokens:
 #     traeagent, co-authored-by, and variants (see commit-msg)
 #   - reject if any commit being pushed has an author/committer email
@@ -14,7 +15,7 @@
 # in the push range and rejects them at the last checkpoint.
 set -euo pipefail
 
-allowed_branch="main"
+allowed_branch="dev"
 required_email="602187256@qq.com"
 # Keep this in sync with commit-msg's forbidden_re.
 forbidden_re='trae[^a-z]*agent|co-?authored[ -]by|generated[ -](by|with)[ -]trae'
@@ -24,10 +25,10 @@ forbidden_re='trae[^a-z]*agent|co-?authored[ -]by|generated[ -](by|with)[ -]trae
 # whether any .rs file differs between the push range and its merge base.
 run_tests_if_needed() {
     local range="$1"
-    # For a new branch (range == single sha), compare against origin/main.
+    # For a new branch (range == single sha), compare against origin/dev.
     local diff_range="$range"
     if ! git rev-parse --verify "$range" >/dev/null 2>&1; then
-        diff_range="origin/main..$range"
+        diff_range="origin/dev..$range"
     fi
     # Only run tests if .rs files changed in the push range.
     if git diff --name-only "$diff_range" -- 2>/dev/null | grep -q '\.rs$'; then
