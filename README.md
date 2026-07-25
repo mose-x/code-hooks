@@ -1,6 +1,6 @@
 # code-hooks
 
-Private repo hosting git hooks for code repos (primary consumer: [mose-x/nvm-rust](https://github.com/mose-x/nvm-rust)).
+Public repo hosting git hooks for code repos (primary consumer: [mose-x/nvm-rust](https://github.com/mose-x/nvm-rust)).
 
 The hooks themselves (`pre-commit`, `commit-msg`, `pre-push`) are never committed
 into the consumer repo; instead each sandbox/workdir points at this repo via
@@ -54,29 +54,34 @@ enforcement is the `commit-lint` job in CI, which re-runs the `commit-msg`
 script and the identity check from `pre-push` against every commit in a PR.
 This repo ships it as a [reusable workflow](https://docs.github.com/en/actions/using-workflows/reusing-workflows)
 so consumer repos adopt it with one line instead of copy-pasting ~60 lines
-of SSH key setup + clone + scan logic.
+of clone + scan logic.
 
 ### Adopt in a consumer repo
 
-1. **Add the deploy key** (read-only SSH key for this repo) as a repository
-   secret named `CODE_HOOKS_DEPLOY_KEY` in the consumer repo. Generate one
-   via `ssh-keygen -t ed25519 -f code_hooks_deploy_key -N ""` and add the
-   public key under this repo's Settings -> Deploy keys.
+This repo is **public**, so the reusable workflow clones it over
+unauthenticated HTTPS. Consumer repos need **no secrets, no deploy key,
+no PAT** -- adoption is two steps:
 
-2. **Call the workflow** from the consumer repo's CI (e.g.
+1. **Call the workflow** from the consumer repo's CI (e.g.
    `.github/workflows/ci.yml`):
 
    ```yaml
    jobs:
      commit-lint:
        uses: mose-x/code-hooks/.github/workflows/commit-lint.yml@main
-       secrets: inherit   # forwards CODE_HOOKS_DEPLOY_KEY
    ```
 
-3. **Set branch protection** on the consumer repo's protected branch
+   No `secrets: inherit` needed -- the called workflow declares no secrets.
+
+2. **Set branch protection** on the consumer repo's protected branch
    (Settings -> Branches -> Edit) to require the `commit-lint` status
    check. This is the only step that actually *enforces* -- without it,
    a failing `commit-lint` job is advisory and the PR can still merge.
+
+> **Visibility constraint**: GitHub only lets a caller repo reference a
+> reusable workflow from a repo it can read. Because this repo is public,
+> both public and private consumer repos can use it. (If this repo were
+> private, only private consumers in the same org could use it.)
 
 ### Why three layers
 

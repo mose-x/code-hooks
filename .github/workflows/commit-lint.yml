@@ -4,7 +4,6 @@
 #   jobs:
 #     commit-lint:
 #       uses: mose-x/code-hooks/.github/workflows/commit-lint.yml@main
-#       secrets: inherit
 #
 # CI backstop for the local hooks in this repo (commit-msg + pre-push).
 # `git commit --no-verify` bypasses local hooks, so the PR is the last
@@ -14,17 +13,17 @@
 # repo's checkout, so updating them here updates enforcement for every
 # consumer repo without touching their CI.
 #
-# Caller MUST provide `secrets.CODE_HOOKS_DEPLOY_KEY` (a read-only SSH
-# deploy key for this repo) via `secrets: inherit` or explicit mapping.
+# This repo is public, so the runner clones it over unauthenticated
+# HTTPS -- consumer repos need NO secrets, NO deploy key, NO PAT.
+# Adoption is a single `uses:` line.
 #
 # Required status check name for branch protection: `commit-lint`.
 name: commit-lint
 
 on:
   workflow_call:
-    # No inputs: the only configurable surface is the deploy key secret,
-    # passed via `secrets:`. Parameter-free signature means consumer
-    # repos can adopt `uses: ...@main` with no extra config.
+    # No inputs, no secrets. Parameter-free signature means consumer
+    # repos adopt `uses: ...@main` with zero extra config.
 
 permissions:
   contents: read
@@ -49,31 +48,12 @@ jobs:
           # range and skip linting commits beyond the fetch depth.
           fetch-depth: 0
 
-      - name: Configure SSH deploy key for code-hooks
-        env:
-          CODE_HOOKS_DEPLOY_KEY: ${{ secrets.CODE_HOOKS_DEPLOY_KEY }}
-        run: |
-          mkdir -p ~/.ssh
-          printf '%s\n' "$CODE_HOOKS_DEPLOY_KEY" > ~/.ssh/code_hooks_deploy_key
-          chmod 600 ~/.ssh/code_hooks_deploy_key
-          # Pin GitHub's well-known ed25519 host key. Avoids ssh-keyscan,
-          # which would accept any MITM'd host key presented during the
-          # clone (an attacker on the network path could otherwise serve
-          # a fake code-hooks repo with neutered hook scripts).
-          echo "github.com ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOMqqnkVzrm0SdG6UOoqKLsabgH5C9okWi0dh2l9GKJl" >> ~/.ssh/known_hosts
-          cat >> ~/.ssh/config <<'EOF'
-          Host github.com
-            HostName github.com
-            User git
-            IdentityFile ~/.ssh/code_hooks_deploy_key
-            IdentitiesOnly yes
-          EOF
-
-      - name: Clone code-hooks (private, via deploy key)
+      - name: Clone code-hooks (public, unauthenticated HTTPS)
         # Depth 1: only the hook scripts are needed, no history. @main
         # is intentional so rule fixes propagate immediately to all
-        # consumers without each repo bumping a version pin.
-        run: git clone --depth 1 git@github.com:mose-x/code-hooks.git /tmp/code-hooks
+        # consumers without each repo bumping a version pin. No deploy
+        # key needed since this repo is public.
+        run: git clone --depth 1 https://github.com/mose-x/code-hooks.git /tmp/code-hooks
 
       - name: Lint commit messages + identities in PR range
         env:
