@@ -6,6 +6,7 @@
 #     (feat|fix|refactor|perf|test|style|docs|ci|chore|build|revert)
 #   - no forbidden tokens anywhere: traeagent, Co-authored-by, and variants
 #   - message must be English only (pure ASCII): no CJK, emoji, curly quotes, ...
+#   - total message length (subject + body) <= 200 chars (UTF-8 codepoint count)
 set -euo pipefail
 
 msg_file="$1"
@@ -76,6 +77,19 @@ if sed '/^#/d' "$msg_file" | LC_ALL=C tr -d '\000-\177' | grep -q .; then
     echo "commit-msg: reject" >&2
     echo "  message contains non-ASCII characters; English (ASCII) only:" >&2
     sed '/^#/d' "$msg_file" | LC_ALL=C grep -nE '[^ -~]' | head -1 | sed 's/^/  /' >&2
+    exit 1
+fi
+
+# Rule 6: total message length (subject + body, excluding git comment lines
+# and trailing whitespace) must be <= 200 UTF-8 codepoints. The subject-only
+# 100-char cap (Rule 1) stays; this constrains the whole message so bodies
+# stay terse. Python is used for correct UTF-8 codepoint counting (bash
+# ${#var} depends on locale; python3 len() counts codepoints unconditionally).
+total_max=200
+total_len=$(sed '/^#/d' "$msg_file" | python3 -c 'import sys; print(len(sys.stdin.read().rstrip()))')
+if [ "$total_len" -gt "$total_max" ]; then
+    echo "commit-msg: reject" >&2
+    echo "  total message is $total_len chars (max $total_max); subject+body must be terser" >&2
     exit 1
 fi
 
