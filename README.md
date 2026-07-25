@@ -47,6 +47,49 @@ into the workdir so `pre-commit` is satisfied without any manual `git config`.
 
 Replace `/workspace` with the actual target workdir path if different.
 
+## CI enforcement (reusable workflow)
+
+Local hooks can be bypassed with `git commit --no-verify`. The real
+enforcement is the `commit-lint` job in CI, which re-runs the `commit-msg`
+script and the identity check from `pre-push` against every commit in a PR.
+This repo ships it as a [reusable workflow](https://docs.github.com/en/actions/using-workflows/reusing-workflows)
+so consumer repos adopt it with one line instead of copy-pasting ~60 lines
+of SSH key setup + clone + scan logic.
+
+### Adopt in a consumer repo
+
+1. **Add the deploy key** (read-only SSH key for this repo) as a repository
+   secret named `CODE_HOOKS_DEPLOY_KEY` in the consumer repo. Generate one
+   via `ssh-keygen -t ed25519 -f code_hooks_deploy_key -N ""` and add the
+   public key under this repo's Settings -> Deploy keys.
+
+2. **Call the workflow** from the consumer repo's CI (e.g.
+   `.github/workflows/ci.yml`):
+
+   ```yaml
+   jobs:
+     commit-lint:
+       uses: mose-x/code-hooks/.github/workflows/commit-lint.yml@main
+       secrets: inherit   # forwards CODE_HOOKS_DEPLOY_KEY
+   ```
+
+3. **Set branch protection** on the consumer repo's protected branch
+   (Settings -> Branches -> Edit) to require the `commit-lint` status
+   check. This is the only step that actually *enforces* -- without it,
+   a failing `commit-lint` job is advisory and the PR can still merge.
+
+### Why three layers
+
+| Layer | Where | Can bypass? |
+|---|---|---|
+| Local hooks (`commit-msg`/`pre-push`) | developer machine | yes, `--no-verify` |
+| CI `commit-lint` job | GitHub Actions, on PR | only if not required |
+| Branch protection (required check) | GitHub server-side | **no** |
+
+All three layers read the same rules from this repo, so a rule fix (e.g.
+the new-branch scan fix in `pre-push`) propagates to every consumer repo
+without each repo touching its CI.
+
 ## Notes
 
 - `~/.git-credentials` (the GitHub PAT) and `/root/.code-hooks/` live under
