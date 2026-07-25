@@ -5,7 +5,8 @@
 #   - reject if any commit being pushed contains forbidden tokens:
 #     traeagent, co-authored-by, and variants (see commit-msg)
 #   - reject if any commit being pushed has an author/committer email
-#     other than 602187256@qq.com  (prevents noreply / split-identity history)
+#     NOT in the allowlist (allowed-identities). Catches noreply / split
+#     identity history that slipped in via --no-verify or pre-hook commits.
 #   - run `cargo test --all` before the push goes through
 #
 # The email scan closes the gap that let noreply commits land on origin/main
@@ -16,9 +17,37 @@
 set -euo pipefail
 
 allowed_branch="dev"
-required_email="602187256@qq.com"
 # Keep this in sync with commit-msg's forbidden_re.
 forbidden_re='trae[^a-z]*agent|co-?authored[ -]by|generated[ -](by|with)[ -]trae'
+
+HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Resolve the allowlist file path. Empty string if none found.
+# Same precedence as pre-commit: local override wins over committed default.
+allowlist_file=""
+if [ -f "$HOOKS_DIR/.allowed-identities.local" ]; then
+    allowlist_file="$HOOKS_DIR/.allowed-identities.local"
+elif [ -f "$HOOKS_DIR/allowed-identities" ]; then
+    allowlist_file="$HOOKS_DIR/allowed-identities"
+fi
+
+# Fail closed: no allowlist -> no push. A missing/empty file means every
+# commit's identity is "unknown", so we cannot tell if it should be allowed.
+if [ -z "$allowlist_file" ] || ! grep -qE '<[^>]+>' "$allowlist_file" 2>/dev/null; then
+    echo "pre-push: reject" >&2
+    echo "  no allowed-identities file with at least one 'Name <email>' entry." >&2
+    echo "  looked in:" >&2
+    echo "    $HOOKS_DIR/.allowed-identities.local" >&2
+    echo "    $HOOKS_DIR/allowed-identities" >&2
+    echo "  fail closed by design -- add an identity to one of the files." >&2
+    exit 1
+fi
+
+# Extract the allowed emails (one per line) from the allowlist file.
+# Used by the per-commit identity check below.
+allowed_emails=$(sed -E 's/#.*$//; /^[[:space:]]*$/d' "$allowlist_file" \
+    | grep -oE '<[^>]+>' | tr -d '<>' \
+    | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
 
 # `cargo test` is expensive; run it once for the whole push, not per ref.
 # We only run it if the push contains source changes -- detect by checking
@@ -91,28 +120,38 @@ while read -r local_ref local_sha remote_ref remote_sha; do
         exit 1
     fi
 
-    # Reject any commit whose author OR committer email is not the required one.
-    # Uses %ae/%ce (raw, verbatim from the commit object) so rewritten history
-    # is caught too. Print the first offender so the user knows which commit
-    # to rewrite.
+    # Reject any commit whose author OR committer email is NOT in the
+    # allowlist. Uses %ae/%ce (raw, verbatim from the commit object) so
+    # rewritten history is caught too. Print the first offender so the
+    # user knows which commit to rewrite.
+    #
+    # awk reads `allowed_emails` from a temp file (passed as argv[1]) so
+    # the comparison can't be confused by stdin content. Two emails per
+    # commit line; either one not in the allowlist rejects the commit.
+    allowed_tmp=$(mktemp)
+    printf '%s\n' "$allowed_emails" > "$allowed_tmp"
     bad_identity=$(git log --format='%h | author: %an <%ae> | committer: %cn <%ce>' "$range" \
-        | awk -v req="$required_email" '
+        | awk -v req="$allowed_tmp" '
+            BEGIN {
+                while ((getline line < req) > 0) allowed[line] = 1
+                close(req)
+            }
             /<[^>]+>/ {
-                # extract the two email addresses between < and >
                 line=$0
-                # pull author email
                 match(line, /author: [^<]*<([^>]+)>/, a)
-                # pull committer email
                 match(line, /committer: [^<]*<([^>]+)>/, c)
-                if (a[1] != req || c[1] != req) { print; exit }
+                if (!(a[1] in allowed) || !(c[1] in allowed)) { print; exit }
             }
         ')
+    rm -f "$allowed_tmp"
     if [ -n "$bad_identity" ]; then
         echo "pre-push: reject" >&2
-        echo "  a pushed commit has an author/committer email != $required_email" >&2
+        echo "  a pushed commit has an author/committer email not in the allowlist." >&2
         echo "  (this is what caused noreply to leak into the history before)" >&2
         echo "  offending commit:" >&2
         echo "    $bad_identity" >&2
+        echo "  allowed emails:" >&2
+        printf '%s\n' "$allowed_emails" | sed 's/^/    /' >&2
         echo "  fix: rewrite history with git filter-branch / filter-repo, or drop the commit." >&2
         exit 1
     fi

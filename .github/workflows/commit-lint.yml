@@ -9,15 +9,15 @@
 # `git commit --no-verify` bypasses local hooks, so the PR is the last
 # checkpoint before code lands on a protected branch. Rules run here are
 # the single source of truth: the `commit-msg` script and the
-# `required_email` line in `pre-push` are read at runtime from this
-# repo's checkout, so updating them here updates enforcement for every
-# consumer repo without touching their CI.
+# `allowed-identities` file are read at runtime from this repo's checkout,
+# so updating them here updates enforcement for every consumer repo without
+# touching their CI.
 #
 # This repo is public, so the runner clones it over unauthenticated
 # HTTPS -- consumer repos need NO secrets, NO deploy key, NO PAT.
 # Adoption is a single `uses:` line.
 #
-# Required status check name for branch protection: `commit-lint`.
+# Required status check name for branch protection: `commit-lint / commit-lint`.
 name: commit-lint
 
 on:
@@ -49,10 +49,10 @@ jobs:
           fetch-depth: 0
 
       - name: Clone code-hooks (public, unauthenticated HTTPS)
-        # Depth 1: only the hook scripts are needed, no history. @main
-        # is intentional so rule fixes propagate immediately to all
-        # consumers without each repo bumping a version pin. No deploy
-        # key needed since this repo is public.
+        # Depth 1: only the hook scripts + allowed-identities are needed,
+        # no history. @main is intentional so rule fixes propagate
+        # immediately to all consumers without each repo bumping a
+        # version pin. No deploy key needed since this repo is public.
         run: git clone --depth 1 https://github.com/mose-x/code-hooks.git /tmp/code-hooks
 
       - name: Lint commit messages + identities in PR range
@@ -61,19 +61,25 @@ jobs:
           HEAD: ${{ github.event.pull_request.head.sha }}
         run: |
           set -euo pipefail
-          # Read required_email from code-hooks/pre-push (single source
-          # of truth). If the line is ever renamed or removed, this grep
-          # returns empty and we fail closed (reject everything) rather
-          # than silently skipping the identity check.
-          required_email=$(grep -E '^required_email=' /tmp/code-hooks/pre-push \
-            | head -1 | sed -E 's/^required_email="([^"]*)".*/\1/')
-          if [ -z "$required_email" ]; then
-            echo "commit-lint: could not read required_email from pre-push" >&2
+
+          allowlist_file=/tmp/code-hooks/allowed-identities
+          if [ ! -f "$allowlist_file" ] || ! grep -qE '<[^>]+>' "$allowlist_file" 2>/dev/null; then
+            echo "commit-lint: reject" >&2
+            echo "  $allowlist_file is missing or has no 'Name <email>' entries." >&2
+            echo "  fail closed by design." >&2
             exit 1
           fi
-          echo "Required email: $required_email"
+          # Extract the allowed emails, one per line.
+          allowed_emails=$(sed -E 's/#.*$//; /^[[:space:]]*$/d' "$allowlist_file" \
+              | grep -oE '<[^>]+>' | tr -d '<>' \
+              | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
+          echo "Allowed emails:"
+          printf '%s\n' "$allowed_emails" | sed 's/^/  /'
+
           echo "Scanning commits ${BASE:0:7}..${HEAD:0:7}"
           fail=0
+          allowed_tmp=$(mktemp)
+          printf '%s\n' "$allowed_emails" > "$allowed_tmp"
           for sha in $(git rev-list --reverse "$BASE..$HEAD"); do
             subj=$(git log -1 --format='%s' "$sha")
             echo "::group::$sha $subj"
@@ -83,19 +89,22 @@ jobs:
             if ! /tmp/code-hooks/commit-msg /tmp/commit-msg.txt; then
               fail=1
             fi
-            # 2. Identity: author AND committer email must match. Uses
-            #    %ae/%ce (raw from the commit object) so rewritten
-            #    history is caught too. Squash merges from GitHub carry
-            #    committer=noreply@github.com but only appear on push
-            #    events, not in the PR range, so the `if` guard above
-            #    keeps them out of scope.
+            # 2. Identity: author AND committer email must be in the
+            #    allowlist. Uses %ae/%ce (raw from the commit object) so
+            #    rewritten history is caught too. Squash merges from
+            #    GitHub carry committer=noreply@github.com but only appear
+            #    on push events, not in the PR range, so the `if` guard
+            #    above keeps them out of scope.
             ae=$(git log -1 --format='%ae' "$sha")
             ce=$(git log -1 --format='%ce' "$sha")
-            if [ "$ae" != "$required_email" ] || [ "$ce" != "$required_email" ]; then
+            if ! grep -Fxq -- "$ae" "$allowed_tmp" || ! grep -Fxq -- "$ce" "$allowed_tmp"; then
               echo "commit-lint: reject" >&2
-              echo "  $sha: author=$ae committer=$ce (expected $required_email)" >&2
+              echo "  $sha: author=$ae committer=$ce" >&2
+              echo "  allowed emails:" >&2
+              sed 's/^/    /' "$allowed_tmp" >&2
               fail=1
             fi
             echo "::endgroup::"
           done
+          rm -f "$allowed_tmp"
           exit $fail
