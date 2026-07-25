@@ -51,11 +51,36 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     fi
 
     # Scan every commit in the push range for forbidden tokens.
-    # remote_sha may be all-zeros for a new branch; fall back to scanning
-    # the whole local history of the branch in that case.
+    # remote_sha may be all-zeros for a new branch (first push of that
+    # branch). Previously this fell back to `range="$local_sha"`, which
+    # makes `git log "$local_sha"` scan the ENTIRE history reachable from
+    # the tip - including commits already merged into the protected
+    # branch (origin/main) via GitHub PRs. Those squash/merge commits
+    # carry `committer=GitHub <noreply@github.com>` and would trip the
+    # identity check below, blocking every new-branch push even though
+    # the offending commits are historical and cannot be rewritten
+    # without force-pushing main.
+    #
+    # Fix: derive the scan range from a remote tracking branch so only
+    # NEW commits (those not yet on the remote) are scanned. Try
+    # origin/HEAD first (points to the remote default branch), then
+    # origin/main, then origin/master. Fall back to the tip commit
+    # only if no remote tracking branch exists (orphan branch).
     range="$remote_sha..$local_sha"
     if [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
-        range="$local_sha"
+        base=""
+        for ref in origin/HEAD origin/main origin/master; do
+            if git rev-parse --verify "$ref" >/dev/null 2>&1; then
+                base="$ref"
+                break
+            fi
+        done
+        if [ -n "$base" ]; then
+            range="$base..$local_sha"
+        else
+            # Orphan branch with no known remote base: scan just the tip.
+            range="$local_sha"
+        fi
     fi
 
     if git log --format='%B' "$range" | grep -niE "$forbidden_re" >/dev/null 2>&1; then
