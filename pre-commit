@@ -2,14 +2,14 @@
 # pre-commit: enforce identity AND code quality.
 #
 # Identity (always on):
-#   - author    email == 602187256@qq.com  (via `git config user.email`)
-#   - committer email == 602187256@qq.com  (via GIT_COMMITTER_EMAIL override)
+#   - author    email must be in the allowlist (allowed-identities)
+#   - committer email must be in the allowlist
+#     (GIT_COMMITTER_EMAIL override is checked too)
 #
-# The committer check closes a real bypass: `GIT_COMMITTER_EMAIL=x@y git commit`
-# leaves author at the configured email but writes a different committer email
-# into the commit object, which then shows up as a second identity on GitHub.
-# `git config user.email` only controls the author; the committer comes from
-# GIT_COMMITTER_EMAIL / GIT_COMMITTER_NAME env vars when set.
+# The allowlist is read from (first one wins):
+#   1. $HOOKS_DIR/.allowed-identities.local   (gitignored, per-machine override)
+#   2. $HOOKS_DIR/allowed-identities          (committed default)
+# If neither exists or both are empty, fail closed: reject the commit.
 #
 # Code quality (only when src/**/*.rs is staged):
 #   - `cargo fmt --check`          (formatting)
@@ -19,14 +19,51 @@
 # are not penalised with a multi-second compile.
 set -euo pipefail
 
-required_email="602187256@qq.com"
-required_name="mose-zm"
+HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+# Resolve the allowlist file path. Empty string if none found.
+allowlist_file=""
+if [ -f "$HOOKS_DIR/.allowed-identities.local" ]; then
+    allowlist_file="$HOOKS_DIR/.allowed-identities.local"
+elif [ -f "$HOOKS_DIR/allowed-identities" ]; then
+    allowlist_file="$HOOKS_DIR/allowed-identities"
+fi
+
+# Reject if no file OR file has no valid `<email>` entries.
+# Fail closed: an empty/missing allowlist blocks every commit until an admin
+# adds at least one identity. This prevents a fresh clone of code-hooks from
+# silently running with no identity enforcement.
+if [ -z "$allowlist_file" ] || ! grep -qE '<[^>]+>' "$allowlist_file" 2>/dev/null; then
+    echo "pre-commit: reject" >&2
+    echo "  no allowed-identities file with at least one 'Name <email>' entry." >&2
+    echo "  looked in:" >&2
+    echo "    $HOOKS_DIR/.allowed-identities.local" >&2
+    echo "    $HOOKS_DIR/allowed-identities" >&2
+    echo "  fail closed by design -- add an identity to one of the files." >&2
+    exit 1
+fi
+
+# Check that $1 appears as an <email> in the allowlist file.
+# Literal substring match on the bracketed form so dots in emails don't
+# wildcard, and a short prefix can't match a longer one.
+email_in_allowlist() {
+    local target="$1"
+    # Extract just the emails (between < and >), one per line, then exact match.
+    sed -E 's/#.*$//; /^[[:space:]]*$/d' "$allowlist_file" \
+        | grep -oE '<[^>]+>' \
+        | tr -d '<>' \
+        | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' \
+        | grep -Fxq -- "$target"
+}
 
 author_email=$(git config user.email)
-if [ "$author_email" != "$required_email" ]; then
+if ! email_in_allowlist "$author_email"; then
     echo "pre-commit: reject" >&2
-    echo "  user.email (author) is '$author_email', expected '$required_email'" >&2
-    echo "  fix: git config user.email '$required_email'" >&2
+    echo "  user.email (author) is '$author_email', not in allowlist:" >&2
+    sed -E 's/#.*$//; /^[[:space:]]*$/d' "$allowlist_file" \
+        | grep -oE '<[^>]+>' | tr -d '<>' \
+        | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | sed 's/^/    /' >&2
+    echo "  fix: git config user.email '<one of the above>'" >&2
     exit 1
 fi
 
@@ -34,20 +71,14 @@ fi
 # When unset, git falls back to user.email, so we only need to check when it
 # IS set -- but if it is set and disagrees, that is an identity split.
 committer_email="${GIT_COMMITTER_EMAIL:-}"
-if [ -n "$committer_email" ] && [ "$committer_email" != "$required_email" ]; then
+if [ -n "$committer_email" ] && ! email_in_allowlist "$committer_email"; then
     echo "pre-commit: reject" >&2
-    echo "  GIT_COMMITTER_EMAIL is '$committer_email', expected '$required_email'" >&2
-    echo "  Either unset GIT_COMMITTER_EMAIL or set it to '$required_email'." >&2
-    echo "  Leaving it set to a different address creates a split identity" >&2
-    echo "  (author=qq.com, committer=other) on GitHub." >&2
-    exit 1
-fi
-
-# Same for the name, to keep the contributor display consistent.
-committer_name="${GIT_COMMITTER_NAME:-}"
-if [ -n "$committer_name" ] && [ "$committer_name" != "$required_name" ]; then
-    echo "pre-commit: reject" >&2
-    echo "  GIT_COMMITTER_NAME is '$committer_name', expected '$required_name'" >&2
+    echo "  GIT_COMMITTER_EMAIL is '$committer_email', not in allowlist:" >&2
+    sed -E 's/#.*$//; /^[[:space:]]*$/d' "$allowlist_file" \
+        | grep -oE '<[^>]+>' | tr -d '<>' \
+        | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | sed 's/^/    /' >&2
+    echo "  Either unset GIT_COMMITTER_EMAIL or set it to one of the above." >&2
+    echo "  Leaving it set to an unlisted address creates a split identity on GitHub." >&2
     exit 1
 fi
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Bootstrap git hooks for a target workdir from this private hooks repo.
+# Bootstrap git hooks for a target workdir from this public hooks repo.
 #
 # Idempotent: safe to re-run. Reuses credential.helper=store if present.
 #
@@ -24,15 +24,40 @@ fi
 # Point the target repo at the hooks directory.
 git -C "$WORKDIR" config core.hooksPath "$HOOKS_DIR"
 
-# Also pin the author identity in the workdir so pre-commit is happy without
-# any manual `git config user.email`. Override only if missing or wrong.
-current_email=$(git -C "$WORKDIR" config user.email 2>/dev/null || echo "")
-if [ "$current_email" != "602187256@qq.com" ]; then
-    git -C "$WORKDIR" config user.email "602187256@qq.com"
-fi
-current_name=$(git -C "$WORKDIR" config user.name 2>/dev/null || echo "")
-if [ "$current_name" != "mose-zm" ]; then
-    git -C "$WORKDIR" config user.name "mose-zm"
+# Pick the first identity from allowed-identities and pin it into the
+# workdir's git config so pre-commit is satisfied without any manual
+# `git config user.email`. This is a convenience for the primary developer
+# (the first listed identity); contributors with a different email should
+# run `git config user.email <theirs>` manually, or create a
+# `.allowed-identities.local` in $HOOKS_DIR with their own entry first.
+allowlist="$HOOKS_DIR/allowed-identities"
+if [ -f "$allowlist" ] && grep -qE '<[^>]+>' "$allowlist" 2>/dev/null; then
+    # Extract the first `Name <email>` line (ignoring comments/blanks).
+    first_line=$(sed -E 's/#.*$//; /^[[:space:]]*$/d' "$allowlist" \
+        | grep -E '<[^>]+>' | head -1)
+    first_email=$(printf '%s' "$first_line" | grep -oE '<[^>]+>' | tr -d '<>' \
+        | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
+    first_name=$(printf '%s' "$first_line" | sed -E 's/[[:space:]]*<[^>]+>[[:space:]]*$//' \
+        | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
+
+    if [ -n "$first_email" ]; then
+        current_email=$(git -C "$WORKDIR" config user.email 2>/dev/null || echo "")
+        if [ "$current_email" != "$first_email" ]; then
+            git -C "$WORKDIR" config user.email "$first_email"
+        fi
+    fi
+    if [ -n "$first_name" ]; then
+        current_name=$(git -C "$WORKDIR" config user.name 2>/dev/null || echo "")
+        if [ "$current_name" != "$first_name" ]; then
+            git -C "$WORKDIR" config user.name "$first_name"
+        fi
+    fi
+else
+    echo "setup-code-hooks: WARNING: no allowed-identities file with entries." >&2
+    echo "  pre-commit will fail closed until you create one at:" >&2
+    echo "    $HOOKS_DIR/allowed-identities" >&2
+    echo "  or a local override at:" >&2
+    echo "    $HOOKS_DIR/.allowed-identities.local" >&2
 fi
 
 echo "hooksPath -> $(git -C "$WORKDIR" config core.hooksPath)"
