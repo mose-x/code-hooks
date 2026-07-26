@@ -1,0 +1,27 @@
+# code-hooks 自身的 CI：消费自己导出的 commit-lint reusable workflow。
+#
+# 这一层是必须的 —— 否则 code-hooks 自己的 PR 没有任何身份校验，
+# 外人 fork 后提 PR（即使 main 是 protected）也能绕过 allowed-identities
+# 的"只允许我提交"约束，因为本地 hooks 可以被 `git commit --no-verify`
+# 绕过，只有 PR 上的 CI 是真正的最后一道关卡。
+#
+# commit-lint.yml 是 `on: workflow_call`，可直接被本仓库调用；
+# 规则文件（allowed-identities / commit-msg / pre-push）始终从 main
+# 分支的 code-hooks 仓库 clone 读取，PR 作者改过的副本不生效 ——
+# 这是单点真相设计，防止 PR 作者自己改规则放行自己。
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  commit-lint:
+    name: commit-lint
+    uses: ./.github/workflows/commit-lint.yml
