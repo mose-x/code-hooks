@@ -50,21 +50,26 @@ bob <bob@example.org>
 - The file is the single source of truth read at runtime by all three layers
   (`pre-commit`, `pre-push`, CI `commit-lint`).
 
-### File lookup order (first match wins)
+### Single source of truth (no local override)
 
-1. `$HOOKS_DIR/.allowed-identities.local` -- per-machine override, gitignored,
-   never committed. Use this to test a new contributor locally before adding
-   them to the shared default.
-2. `$HOOKS_DIR/allowed-identities` -- the committed default shipped with this
-   repo. **This is what CI reads.**
+The allowlist is read exclusively from `$HOOKS_DIR/allowed-identities` -- the
+file committed to this repo. There is **no local override mechanism**: a
+contributor cannot drop a `.allowed-identities.local` next to the hooks to
+bypass the check. The repo owner solely controls who can commit by editing
+this one file.
+
+This is intentional: even though CI is the ultimate enforcement layer (it
+reads the file from GitHub, which a contributor cannot edit without a merged
+PR), removing the local override keeps the model simple -- one file, one
+owner, no surprise bypass paths on developer machines.
 
 ### Fail-closed behaviour
 
-If neither file exists, or the resolved file has no `Name <email>` entries,
-**all three layers reject every commit/push**. This is intentional: a fresh
-clone of code-hooks with no allowlist configured must not silently run with
+If `allowed-identities` is missing or has no `Name <email>` entries, **all
+three layers reject every commit/push**. This is intentional: a fresh clone
+of code-hooks with no allowlist configured must not silently run with
 identity enforcement disabled. Fix it by adding at least one identity to
-`allowed-identities` (committed) or `.allowed-identities.local` (local only).
+`allowed-identities`.
 
 ### Adding a new contributor
 
@@ -72,8 +77,8 @@ identity enforcement disabled. Fix it by adding at least one identity to
 2. Commit and push to `code-hooks` (the contributor's PRs to consumer repos
    will start passing CI once `@main` is updated).
 3. The contributor runs `git config user.email their@email` in their local
-   consumer-repo checkout (or runs `setup-code-hooks.sh`, which pins the
-   *first* listed identity -- usually the owner's -- into the workdir config).
+   consumer-repo checkout so pre-commit passes locally. (CI will pass too,
+   since the email is now in the allowlist on GitHub.)
 
 ## Activate in a fresh sandbox
 

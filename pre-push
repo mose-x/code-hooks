@@ -22,24 +22,20 @@ forbidden_re='trae[^a-z]*agent|co-?authored[ -]by|generated[ -](by|with)[ -]trae
 
 HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Resolve the allowlist file path. Empty string if none found.
-# Same precedence as pre-commit: local override wins over committed default.
-allowlist_file=""
-if [ -f "$HOOKS_DIR/.allowed-identities.local" ]; then
-    allowlist_file="$HOOKS_DIR/.allowed-identities.local"
-elif [ -f "$HOOKS_DIR/allowed-identities" ]; then
-    allowlist_file="$HOOKS_DIR/allowed-identities"
-fi
+# Resolve the allowlist file path. Single source of truth (no local override).
+# Single source of truth: the committed allowed-identities file.
+# No local override -- the repo owner controls who can commit by editing
+# this file in the code-hooks repo. Contributors cannot bypass identity
+# checks by creating a local file.
+allowlist_file="$HOOKS_DIR/allowed-identities"
 
 # Fail closed: no allowlist -> no push. A missing/empty file means every
 # commit's identity is "unknown", so we cannot tell if it should be allowed.
 if [ -z "$allowlist_file" ] || ! grep -qE '<[^>]+>' "$allowlist_file" 2>/dev/null; then
     echo "pre-push: reject" >&2
     echo "  no allowed-identities file with at least one 'Name <email>' entry." >&2
-    echo "  looked in:" >&2
-    echo "    $HOOKS_DIR/.allowed-identities.local" >&2
-    echo "    $HOOKS_DIR/allowed-identities" >&2
-    echo "  fail closed by design -- add an identity to one of the files." >&2
+    echo "  expected at: $allowlist_file" >&2
+    echo "  fail closed by design -- the repo owner must add an identity." >&2
     exit 1
 fi
 

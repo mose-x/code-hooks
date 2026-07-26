@@ -6,10 +6,8 @@
 #   - committer email must be in the allowlist
 #     (GIT_COMMITTER_EMAIL override is checked too)
 #
-# The allowlist is read from (first one wins):
-#   1. $HOOKS_DIR/.allowed-identities.local   (gitignored, per-machine override)
-#   2. $HOOKS_DIR/allowed-identities          (committed default)
-# If neither exists or both are empty, fail closed: reject the commit.
+# The allowlist is read from $HOOKS_DIR/allowed-identities (committed).
+# No local override -- the repo owner solely controls who can commit.
 #
 # Code quality (only when src/**/*.rs is staged):
 #   - `cargo fmt --check`          (formatting)
@@ -22,12 +20,11 @@ set -euo pipefail
 HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # Resolve the allowlist file path. Empty string if none found.
-allowlist_file=""
-if [ -f "$HOOKS_DIR/.allowed-identities.local" ]; then
-    allowlist_file="$HOOKS_DIR/.allowed-identities.local"
-elif [ -f "$HOOKS_DIR/allowed-identities" ]; then
-    allowlist_file="$HOOKS_DIR/allowed-identities"
-fi
+# Single source of truth: the committed allowed-identities file.
+# No local override -- the repo owner controls who can commit by editing
+# this file in the code-hooks repo. Contributors cannot bypass identity
+# checks by creating a local file.
+allowlist_file="$HOOKS_DIR/allowed-identities"
 
 # Reject if no file OR file has no valid `<email>` entries.
 # Fail closed: an empty/missing allowlist blocks every commit until an admin
@@ -36,10 +33,8 @@ fi
 if [ -z "$allowlist_file" ] || ! grep -qE '<[^>]+>' "$allowlist_file" 2>/dev/null; then
     echo "pre-commit: reject" >&2
     echo "  no allowed-identities file with at least one 'Name <email>' entry." >&2
-    echo "  looked in:" >&2
-    echo "    $HOOKS_DIR/.allowed-identities.local" >&2
-    echo "    $HOOKS_DIR/allowed-identities" >&2
-    echo "  fail closed by design -- add an identity to one of the files." >&2
+    echo "  expected at: $allowlist_file" >&2
+    echo "  fail closed by design -- the repo owner must add an identity." >&2
     exit 1
 fi
 

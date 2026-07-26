@@ -1,4 +1,0 @@
-# Local override for the identity allowlist. Per-machine / per-contributor:
-# drop your own `Name <email>` line here to override the committed
-# `allowed-identities` without changing the shared default. Never committed.
-.allowed-identities.local
