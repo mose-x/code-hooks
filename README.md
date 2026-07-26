@@ -1,6 +1,6 @@
 # code-hooks
 
-Public repo hosting git hooks for code repos (primary consumer: [mose-x/nvm-rust](https://github.com/mose-x/nvm-rust)).
+Public repo hosting shared git hooks for any repo that adopts them.
 
 The hooks themselves (`pre-commit`, `commit-msg`, `pre-push`) are never committed
 into the consumer repo; instead each sandbox/workdir points at this repo via
