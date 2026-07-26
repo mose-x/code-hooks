@@ -15,7 +15,7 @@
 # If this file is MISSING or EMPTY (no non-comment entries), all three
 # layers fail closed: every commit is rejected. This prevents a fresh
 # clone of code-hooks from silently running with no identity enforcement.
-# Either commit a real allowlist here, or create a local one next to the
-# hooks (see setup-code-hooks.sh) and it will be preferred.
+# The repo owner must commit at least one identity here. There is no local
+# override mechanism -- this file is the single source of truth.
 
 mose-zm <602187256@qq.com>
