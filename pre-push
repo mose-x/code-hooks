@@ -127,6 +127,14 @@ while read -r local_ref local_sha remote_ref remote_sha; do
             ;;
     esac
 
+    # Branch deletion: both shas are all-zeros. Nothing to scan, no
+    # identity to check -- the branch is being removed, not added to.
+    # Skip silently; the remote will perform the actual deletion.
+    if [ "$local_sha" = "0000000000000000000000000000000000000000" ] \
+       && [ "$remote_sha" = "0000000000000000000000000000000000000000" ]; then
+        continue
+    fi
+
     if ! branch_allowed "$branch"; then
         echo "pre-push: reject" >&2
         echo "  pushing to branch '$branch', not in [allowed_branches]:" >&2
