@@ -2,11 +2,11 @@
 # pre-commit: enforce identity AND code quality.
 #
 # Identity (always on):
-#   - author    email must be in the allowlist (allowed-identities)
+#   - author    email must be in the allowlist (hook-rules.conf [identities])
 #   - committer email must be in the allowlist
 #     (GIT_COMMITTER_EMAIL override is checked too)
 #
-# The allowlist is read from $HOOKS_DIR/allowed-identities (committed).
+# The allowlist is read from $HOOKS_DIR/hook-rules.conf (committed).
 # No local override -- the repo owner solely controls who can commit.
 #
 # Code quality (only when src/**/*.rs is staged):
@@ -19,44 +19,30 @@ set -euo pipefail
 
 HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Resolve the allowlist file path. Empty string if none found.
-# Single source of truth: the committed allowed-identities file.
-# No local override -- the repo owner controls who can commit by editing
-# this file in the code-hooks repo. Contributors cannot bypass identity
-# checks by creating a local file.
-allowlist_file="$HOOKS_DIR/allowed-identities"
+# shellcheck source=load-config.sh
+. "$HOOKS_DIR/load-config.sh"
 
-# Reject if no file OR file has no valid `<email>` entries.
-# Fail closed: an empty/missing allowlist blocks every commit until an admin
-# adds at least one identity. This prevents a fresh clone of code-hooks from
-# silently running with no identity enforcement.
-if [ -z "$allowlist_file" ] || ! grep -qE '<[^>]+>' "$allowlist_file" 2>/dev/null; then
+# Fail closed: missing config file or empty [identities] section blocks
+# every commit. This prevents a fresh clone of code-hooks from silently
+# running with no identity enforcement.
+if [ "$config_load_ok" != "1" ]; then
     echo "pre-commit: reject" >&2
-    echo "  no allowed-identities file with at least one 'Name <email>' entry." >&2
-    echo "  expected at: $allowlist_file" >&2
+    echo "  hook-rules.conf not found at: $config_file" >&2
     echo "  fail closed by design -- the repo owner must add an identity." >&2
     exit 1
 fi
-
-# Check that $1 appears as an <email> in the allowlist file.
-# Literal substring match on the bracketed form so dots in emails don't
-# wildcard, and a short prefix can't match a longer one.
-email_in_allowlist() {
-    local target="$1"
-    # Extract just the emails (between < and >), one per line, then exact match.
-    sed -E 's/#.*$//; /^[[:space:]]*$/d' "$allowlist_file" \
-        | grep -oE '<[^>]+>' \
-        | tr -d '<>' \
-        | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' \
-        | grep -Fxq -- "$target"
-}
+if ! config_section_nonempty identities; then
+    echo "pre-commit: reject" >&2
+    echo "  [identities] section is missing or empty in hook-rules.conf." >&2
+    echo "  fail closed by design -- the repo owner must add an identity." >&2
+    exit 1
+fi
 
 author_email=$(git config user.email)
 if ! email_in_allowlist "$author_email"; then
     echo "pre-commit: reject" >&2
     echo "  user.email (author) is '$author_email', not in allowlist:" >&2
-    sed -E 's/#.*$//; /^[[:space:]]*$/d' "$allowlist_file" \
-        | grep -oE '<[^>]+>' | tr -d '<>' \
+    get_identities | grep -oE '<[^>]+>' | tr -d '<>' \
         | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | sed 's/^/    /' >&2
     echo "  fix: git config user.email '<one of the above>'" >&2
     exit 1
@@ -69,8 +55,7 @@ committer_email="${GIT_COMMITTER_EMAIL:-}"
 if [ -n "$committer_email" ] && ! email_in_allowlist "$committer_email"; then
     echo "pre-commit: reject" >&2
     echo "  GIT_COMMITTER_EMAIL is '$committer_email', not in allowlist:" >&2
-    sed -E 's/#.*$//; /^[[:space:]]*$/d' "$allowlist_file" \
-        | grep -oE '<[^>]+>' | tr -d '<>' \
+    get_identities | grep -oE '<[^>]+>' | tr -d '<>' \
         | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | sed 's/^/    /' >&2
     echo "  Either unset GIT_COMMITTER_EMAIL or set it to one of the above." >&2
     echo "  Leaving it set to an unlisted address creates a split identity on GitHub." >&2

@@ -1,13 +1,19 @@
 #!/usr/bin/env bash
 # pre-push: enforce push policy.
-#   - only the 'dev' branch may be pushed (main is protected via GitHub
-#     branch protection + required status checks; land changes through PR)
-#   - reject if any commit being pushed contains forbidden tokens:
-#     traeagent, co-authored-by, and variants (see commit-msg)
-#   - reject if any commit being pushed has an author/committer email
-#     NOT in the allowlist (allowed-identities). Catches noreply / split
-#     identity history that slipped in via --no-verify or pre-hook commits.
-#   - run `cargo test --all` before the push goes through
+#   - tag pushes (refs/tags/*):
+#       - skip branch + identity checks (tags are not branch commits)
+#       - annotated tags: validate message is ASCII-only English and
+#         contains no forbidden tokens
+#       - lightweight tags: no message, pass through
+#   - branch pushes:
+#       - branch must match an entry in hook-rules.conf [allowed_branches]
+#         (exact match, or prefix match when entry ends with `*`)
+#       - reject if any commit being pushed contains forbidden tokens
+#         (read from [forbidden_tokens]; normalized match)
+#       - reject if any commit being pushed has an author/committer email
+#         NOT in [identities]. Catches noreply / split identity history
+#         that slipped in via --no-verify or pre-hook commits.
+#       - run `cargo test --all` before the push goes through
 #
 # The email scan closes the gap that let noreply commits land on origin/main
 # in the first place: pre-commit only checks the *current* config/env, so a
@@ -16,34 +22,35 @@
 # in the push range and rejects them at the last checkpoint.
 set -euo pipefail
 
-allowed_branch="dev"
-# Keep this in sync with commit-msg's forbidden_re.
-forbidden_re='trae[^a-z]*agent|co-?authored[ -]by|generated[ -](by|with)[ -]trae'
-
 HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
 
-# Resolve the allowlist file path. Single source of truth (no local override).
-# Single source of truth: the committed allowed-identities file.
-# No local override -- the repo owner controls who can commit by editing
-# this file in the code-hooks repo. Contributors cannot bypass identity
-# checks by creating a local file.
-allowlist_file="$HOOKS_DIR/allowed-identities"
+# shellcheck source=load-config.sh
+. "$HOOKS_DIR/load-config.sh"
 
-# Fail closed: no allowlist -> no push. A missing/empty file means every
-# commit's identity is "unknown", so we cannot tell if it should be allowed.
-if [ -z "$allowlist_file" ] || ! grep -qE '<[^>]+>' "$allowlist_file" 2>/dev/null; then
+# Fail closed: missing config or empty required sections.
+if [ "$config_load_ok" != "1" ]; then
     echo "pre-push: reject" >&2
-    echo "  no allowed-identities file with at least one 'Name <email>' entry." >&2
-    echo "  expected at: $allowlist_file" >&2
-    echo "  fail closed by design -- the repo owner must add an identity." >&2
+    echo "  hook-rules.conf not found at: $config_file" >&2
     exit 1
 fi
-
-# Extract the allowed emails (one per line) from the allowlist file.
-# Used by the per-commit identity check below.
-allowed_emails=$(sed -E 's/#.*$//; /^[[:space:]]*$/d' "$allowlist_file" \
-    | grep -oE '<[^>]+>' | tr -d '<>' \
-    | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
+if ! config_section_nonempty identities; then
+    echo "pre-push: reject" >&2
+    echo "  [identities] section is missing or empty in hook-rules.conf." >&2
+    echo "  fail closed by design." >&2
+    exit 1
+fi
+if ! config_section_nonempty allowed_branches; then
+    echo "pre-push: reject" >&2
+    echo "  [allowed_branches] section is missing or empty in hook-rules.conf." >&2
+    echo "  fail closed by design." >&2
+    exit 1
+fi
+if ! config_section_nonempty forbidden_tokens; then
+    echo "pre-push: reject" >&2
+    echo "  [forbidden_tokens] section is missing or empty in hook-rules.conf." >&2
+    echo "  fail closed by design." >&2
+    exit 1
+fi
 
 # `cargo test` is expensive; run it once for the whole push, not per ref.
 # We only run it if the push contains source changes -- detect by checking
@@ -66,12 +73,64 @@ run_tests_if_needed() {
     fi
 }
 
-while read -r local_ref local_sha remote_ref remote_sha; do
-    # remote_ref looks like refs/heads/<branch>.
-    branch="${remote_ref#refs/heads/}"
-    if [ "$branch" != "$allowed_branch" ]; then
+# Validate an annotated tag's message:
+#   - ASCII only (English-only rule, same as commit-msg)
+#   - no forbidden tokens (same matcher as commit-msg)
+# Lighter than commit-msg: no length cap, no conventional-commits prefix
+# (tags do not need to follow commit conventions).
+validate_tag_message() {
+    local tag_name="$1"
+    local tag_sha="$2"
+    # Annotated tags are objects of type `tag`; lightweight tags point
+    # directly at a commit and have no message to validate.
+    local tag_type
+    tag_type=$(git cat-file -t "$tag_sha" 2>/dev/null || echo "")
+    if [ "$tag_type" != "tag" ]; then
+        return 0
+    fi
+
+    local tag_msg
+    tag_msg=$(git for-each-ref --format='%(contents)' "refs/tags/$tag_name")
+
+    # ASCII-only check.
+    if printf '%s' "$tag_msg" | LC_ALL=C tr -d '\000-\177' | grep -q .; then
         echo "pre-push: reject" >&2
-        echo "  pushing to branch '$branch', only '$allowed_branch' is allowed" >&2
+        echo "  tag $tag_name message contains non-ASCII characters; English only" >&2
+        exit 1
+    fi
+
+    # Forbidden-token check (normalized match).
+    if message_has_forbidden "$tag_msg"; then
+        echo "pre-push: reject" >&2
+        echo "  tag $tag_name message contains a forbidden token" >&2
+        exit 1
+    fi
+}
+
+last_range=""
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+    case "$remote_ref" in
+        refs/tags/*)
+            # Tag push: skip branch + identity checks. Validate message
+            # for annotated tags only; lightweight tags carry no message.
+            tag_name="${remote_ref#refs/tags/}"
+            validate_tag_message "$tag_name" "$local_sha"
+            continue
+            ;;
+        refs/heads/*)
+            branch="${remote_ref#refs/heads/}"
+            ;;
+        *)
+            # Other ref types (e.g. refs/remotes/*): skip silently.
+            continue
+            ;;
+    esac
+
+    if ! branch_allowed "$branch"; then
+        echo "pre-push: reject" >&2
+        echo "  pushing to branch '$branch', not in [allowed_branches]:" >&2
+        get_allowed_branches | sed 's/^/    /' >&2
         exit 1
     fi
 
@@ -107,12 +166,21 @@ while read -r local_ref local_sha remote_ref remote_sha; do
             range="$local_sha"
         fi
     fi
+    last_range="$range"
 
-    if git log --format='%B' "$range" | grep -niE "$forbidden_re" >/dev/null 2>&1; then
+    # Forbidden-token scan across all commit messages in the push range.
+    # Use git log %B (raw body) so multi-line messages are scanned in full.
+    bad_token=""
+    while IFS= read -r commit_body; do
+        if message_has_forbidden "$commit_body"; then
+            bad_token=1
+            break
+        fi
+    done < <(git log --format='%B' "$range")
+    if [ -n "$bad_token" ]; then
         echo "pre-push: reject" >&2
-        echo "  pushed commits contain a forbidden token (trae agent / co-authored-by)" >&2
-        echo "  offending commit:" >&2
-        git log --format='%h %s' "$range" | grep -iE "$forbidden_re" | head -1 | sed 's/^/    /' >&2
+        echo "  pushed commits contain a forbidden token (trae agent / co-authored-by / generated by trae)" >&2
+        git log --format='%h %s' "$range" | head -5 | sed 's/^/    /' >&2
         exit 1
     fi
 
@@ -125,18 +193,20 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     # the comparison can't be confused by stdin content. Two emails per
     # commit line; either one not in the allowlist rejects the commit.
     allowed_tmp=$(mktemp)
-    printf '%s\n' "$allowed_emails" > "$allowed_tmp"
+    get_identities | grep -oE '<[^>]+>' | tr -d '<>' \
+        | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' > "$allowed_tmp"
     bad_identity=$(git log --format='%h | author: %an <%ae> | committer: %cn <%ce>' "$range" \
         | awk -v req="$allowed_tmp" '
             BEGIN {
                 while ((getline line < req) > 0) allowed[line] = 1
                 close(req)
             }
-            /<[^>]+>/ {
+            {
                 line=$0
-                match(line, /author: [^<]*<([^>]+)>/, a)
-                match(line, /committer: [^<]*<([^>]+)>/, c)
-                if (!(a[1] in allowed) || !(c[1] in allowed)) { print; exit }
+                ae=""; ce=""
+                if (match(line, /author: [^<]*<([^>]+)>/, a)) ae=a[1]
+                if (match(line, /committer: [^<]*<([^>]+)>/, c)) ce=c[1]
+                if (!(ae in allowed) || !(ce in allowed)) { print; exit }
             }
         ')
     rm -f "$allowed_tmp"
@@ -147,14 +217,18 @@ while read -r local_ref local_sha remote_ref remote_sha; do
         echo "  offending commit:" >&2
         echo "    $bad_identity" >&2
         echo "  allowed emails:" >&2
-        printf '%s\n' "$allowed_emails" | sed 's/^/    /' >&2
+        get_identities | grep -oE '<[^>]+>' | tr -d '<>' \
+            | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | sed 's/^/    /' >&2
         echo "  fix: rewrite history with git filter-branch / filter-repo, or drop the commit." >&2
         exit 1
     fi
 done
 
 # Run tests once after all refs are validated.
-# Re-derive the range from the last ref read (the only one we allow is main).
-run_tests_if_needed "${range:-HEAD}"
+# Re-derive the range from the last branch ref read (tag pushes do not
+# trigger cargo test -- they do not change source, only metadata).
+if [ -n "$last_range" ]; then
+    run_tests_if_needed "$last_range"
+fi
 
 exit 0

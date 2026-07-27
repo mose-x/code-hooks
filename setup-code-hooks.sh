@@ -24,17 +24,24 @@ fi
 # Point the target repo at the hooks directory.
 git -C "$WORKDIR" config core.hooksPath "$HOOKS_DIR"
 
-# Pick the first identity from allowed-identities and pin it into the
-# workdir's git config so pre-commit is satisfied without any manual
-# `git config user.email`. This is a convenience for the primary developer
-# (the first listed identity); contributors with a different email should
-# run `git config user.email <theirs>` manually, or create a
-# `.allowed-identities.local` in $HOOKS_DIR with their own entry first.
-allowlist="$HOOKS_DIR/allowed-identities"
-if [ -f "$allowlist" ] && grep -qE '<[^>]+>' "$allowlist" 2>/dev/null; then
-    # Extract the first `Name <email>` line (ignoring comments/blanks).
-    first_line=$(sed -E 's/#.*$//; /^[[:space:]]*$/d' "$allowlist" \
-        | grep -E '<[^>]+>' | head -1)
+# Pick the first identity from hook-rules.conf [identities] and pin it
+# into the workdir's git config so pre-commit is satisfied without any
+# manual `git config user.email`. This is a convenience for the primary
+# developer (the first listed identity); contributors with a different
+# email should run `git config user.email <theirs>` manually.
+config_file="$HOOKS_DIR/hook-rules.conf"
+if [ -f "$config_file" ] && grep -qE '<[^>]+>' "$config_file" 2>/dev/null; then
+    # Extract the first `Name <email>` line from the [identities] section
+    # (ignoring comments/blanks/other sections).
+    first_line=$(awk '
+        /^\[/ { in_section = ($0 == "[identities]"); next }
+        in_section {
+            line = $0
+            sub(/#.*/, "", line)
+            gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+            if (line != "") print line
+        }
+    ' "$config_file" | grep -E '<[^>]+>' | head -1)
     first_email=$(printf '%s' "$first_line" | grep -oE '<[^>]+>' | tr -d '<>' \
         | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
     first_name=$(printf '%s' "$first_line" | sed -E 's/[[:space:]]*<[^>]+>[[:space:]]*$//' \
@@ -53,11 +60,10 @@ if [ -f "$allowlist" ] && grep -qE '<[^>]+>' "$allowlist" 2>/dev/null; then
         fi
     fi
 else
-    echo "setup-code-hooks: WARNING: no allowed-identities file with entries." >&2
+    echo "setup-code-hooks: WARNING: no hook-rules.conf with [identities] entries." >&2
     echo "  pre-commit will fail closed until you create one at:" >&2
-    echo "    $HOOKS_DIR/allowed-identities" >&2
-    echo "  or a local override at:" >&2
-    echo "    $HOOKS_DIR/.allowed-identities.local" >&2
+    echo "    $HOOKS_DIR/hook-rules.conf" >&2
+    echo "  with a non-empty [identities] section." >&2
 fi
 
 echo "hooksPath -> $(git -C "$WORKDIR" config core.hooksPath)"

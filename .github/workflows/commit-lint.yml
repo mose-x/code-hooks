@@ -9,7 +9,7 @@
 # `git commit --no-verify` bypasses local hooks, so the PR is the last
 # checkpoint before code lands on a protected branch. Rules run here are
 # the single source of truth: the `commit-msg` script and the
-# `allowed-identities` file are read at runtime from this repo's checkout,
+# `hook-rules.conf` file are read at runtime from this repo's checkout,
 # so updating them here updates enforcement for every consumer repo without
 # touching their CI.
 #
@@ -49,7 +49,7 @@ jobs:
           fetch-depth: 0
 
       - name: Clone code-hooks (public, unauthenticated HTTPS)
-        # Depth 1: only the hook scripts + allowed-identities are needed,
+        # Depth 1: only the hook scripts + hook-rules.conf are needed,
         # no history. @main is intentional so rule fixes propagate
         # immediately to all consumers without each repo bumping a
         # version pin. No deploy key needed since this repo is public.
@@ -62,15 +62,42 @@ jobs:
         run: |
           set -euo pipefail
 
-          allowlist_file=/tmp/code-hooks/allowed-identities
-          if [ ! -f "$allowlist_file" ] || ! grep -qE '<[^>]+>' "$allowlist_file" 2>/dev/null; then
+          config_file=/tmp/code-hooks/hook-rules.conf
+          if [ ! -f "$config_file" ]; then
             echo "commit-lint: reject" >&2
-            echo "  $allowlist_file is missing or has no 'Name <email>' entries." >&2
+            echo "  $config_file not found." >&2
+            exit 1
+          fi
+
+          # Extract a named section's entries (no [section] header, no
+          # comments, no blank lines). Mirrors load-config.sh _section_lines.
+          section_lines() {
+            local section="$1"
+            awk -v want="$section" '
+              /^\[/ {
+                in_section = ($0 == "[" want "]")
+                next
+              }
+              in_section {
+                line = $0
+                sub(/#.*/, "", line)
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+                if (line != "") print line
+              }
+            ' "$config_file"
+          }
+
+          # Sanity-check required sections are present and non-empty.
+          identities=$(section_lines identities)
+          if [ -z "$identities" ]; then
+            echo "commit-lint: reject" >&2
+            echo "  [identities] section is missing or empty in hook-rules.conf." >&2
             echo "  fail closed by design." >&2
             exit 1
           fi
-          # Extract the allowed emails, one per line.
-          allowed_emails=$(sed -E 's/#.*$//; /^[[:space:]]*$/d' "$allowlist_file" \
+
+          # Extract allowed emails (one per line) from [identities].
+          allowed_emails=$(printf '%s\n' "$identities" \
               | grep -oE '<[^>]+>' | tr -d '<>' \
               | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
           echo "Allowed emails:"
