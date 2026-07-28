@@ -135,3 +135,99 @@ jobs:
           done
           rm -f "$allowed_tmp"
           exit $fail
+
+      - name: Lint annotated tags in PR range
+        # Backstop for pre-push validate_tag: catches annotated tags that
+        # land in the PR range with a tagger email not in [identities] or
+        # a message containing a forbidden token. Mirrors the local
+        # hook's annotated-tag checks (tagger identity + ASCII + forbidden
+        # tokens). Lightweight tags are skipped here -- they have no
+        # tagger field and no message; their pointed-to commit identity is
+        # already covered by the commit scan above.
+        if: success() || failure()
+        env:
+          BASE: ${{ github.event.pull_request.base.sha }}
+          HEAD: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          config_file=/tmp/code-hooks/hook-rules.conf
+          # Reuse the helper + allowlist extraction (idempotent, cheap).
+          section_lines() {
+            local section="$1"
+            awk -v want="$section" '
+              /^\[/ { in_section = ($0 == "[" want "]"); next }
+              in_section {
+                line = $0
+                sub(/#.*/, "", line)
+                gsub(/^[[:space:]]+|[[:space:]]+$/, "", line)
+                if (line != "") print line
+              }
+            ' "$config_file"
+          }
+
+          identities=$(section_lines identities)
+          allowed_emails=$(printf '%s\n' "$identities" \
+              | grep -oE '<[^>]+>' | tr -d '<>' \
+              | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//')
+          allowed_tmp=$(mktemp)
+          printf '%s\n' "$allowed_emails" > "$allowed_tmp"
+
+          # Forbidden-token matcher: normalize non-alphanumeric runs to a
+          # single space, lowercase, then word-boundary substring match.
+          # Mirrors load-config.sh message_has_forbidden.
+          normalize() { tr -c '[:alnum:]' ' ' | tr -s ' ' | tr 'A-Z' 'a-z'; }
+          message_has_forbidden() {
+            local msg="$1" norm tokens token tnorm
+            norm=$(printf '%s' "$msg" | normalize)
+            while IFS= read -r token; do
+              tnorm=$(printf '%s' "$token" | normalize)
+              if [ -n "$tnorm" ] && [[ " $norm " == *" $tnorm "* ]]; then
+                return 0
+              fi
+            done < <(section_lines forbidden_tokens)
+            return 1
+          }
+
+          # Find annotated tags whose target commit is in the PR range.
+          # `git for-each-ref refs/tags` lists all tags; we keep those of
+          # type `tag` (annotated) whose %(objectname) points into
+          # BASE..HEAD. A tag created outside the PR range is not our concern.
+          fail=0
+          echo "Scanning annotated tags targeting ${BASE:0:7}..${HEAD:0:7}"
+          range_commits=$(git rev-list "$BASE..$HEAD")
+          while IFS=$'\t' read -r tag_name tag_obj target type; do
+            [ "$type" = "tag" ] || continue
+            # Is the tag's target commit within the PR range?
+            case "$range_commits" in
+              *"$target"*) ;;
+              *) continue ;;
+            esac
+            echo "::group::tag $tag_name -> ${target:0:7}"
+            # 1. Tagger email must be in the allowlist. %(taggeremail)
+            #    returns `<email>` with angle brackets; strip them.
+            tagger_email=$(git for-each-ref --format='%(taggeremail)' "refs/tags/$tag_name" \
+                | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/^<//; s/>$//')
+            if [ -n "$tagger_email" ] && ! grep -Fxq -- "$tagger_email" "$allowed_tmp"; then
+              echo "commit-lint: reject" >&2
+              echo "  tag $tag_name tagger email '$tagger_email' not in allowlist." >&2
+              echo "  allowed emails:" >&2
+              sed 's/^/    /' "$allowed_tmp" >&2
+              fail=1
+            fi
+            # 2. Message: ASCII-only + forbidden tokens.
+            tag_msg=$(git for-each-ref --format='%(contents)' "refs/tags/$tag_name")
+            if printf '%s' "$tag_msg" | LC_ALL=C tr -d '\000-\177' | grep -q .; then
+              echo "commit-lint: reject" >&2
+              echo "  tag $tag_name message contains non-ASCII characters; English only" >&2
+              fail=1
+            fi
+            if message_has_forbidden "$tag_msg"; then
+              echo "commit-lint: reject" >&2
+              echo "  tag $tag_name message contains a forbidden token" >&2
+              fail=1
+            fi
+            echo "::endgroup::"
+          done < <(git for-each-ref --format='%(refname:short)%09%(objectname)%09%(*objectname)%09%(objecttype)' refs/tags)
+          rm -f "$allowed_tmp"
+          exit $fail
