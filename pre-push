@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # pre-push: enforce push policy.
 #   - tag pushes (refs/tags/*):
-#       - skip branch + identity checks (tags are not branch commits)
-#       - annotated tags: validate message is ASCII-only English and
-#         contains no forbidden tokens
-#       - lightweight tags: no message, pass through
+#       - skip branch + forbidden-token-range checks (tags are not branch
+#         commits)
+#       - annotated tags: tagger email must be in [identities]; message
+#         must be ASCII-only English and contain no forbidden tokens
+#       - lightweight tags: the commit they point to must have author AND
+#         committer email in [identities] (so a lightweight tag cannot
+#         bless an unverified commit)
 #   - branch pushes:
 #       - branch must match an entry in hook-rules.conf [allowed_branches]
 #         (exact match, or prefix match when entry ends with `*`)
@@ -13,7 +16,7 @@
 #       - reject if any commit being pushed has an author/committer email
 #         NOT in [identities]. Catches noreply / split identity history
 #         that slipped in via --no-verify or pre-hook commits.
-#       - run `cargo test --all` before the push goes through
+#       - run per-language `test` stage from [lang_tools] before the push
 #
 # The email scan closes the gap that let noreply commits land on origin/main
 # in the first place: pre-commit only checks the *current* config/env, so a
@@ -93,37 +96,76 @@ run_tests_if_needed() {
     fi
 }
 
-# Validate an annotated tag's message:
-#   - ASCII only (English-only rule, same as commit-msg)
-#   - no forbidden tokens (same matcher as commit-msg)
-# Lighter than commit-msg: no length cap, no conventional-commits prefix
-# (tags do not need to follow commit conventions).
-validate_tag_message() {
+# Validate a pushed tag:
+#   - annotated tag: tagger email must be in [identities]; message must
+#     be ASCII-only English and contain no forbidden tokens
+#   - lightweight tag: no message to validate, but the commit it points
+#     to must have author AND committer email in [identities] (mirrors the
+#     branch identity check -- closes the gap where a tag is pushed onto a
+#     commit made with a wrong/unknown email)
+# Lighter than commit-msg for the message part: no length cap, no
+# conventional-commits prefix (tags do not follow commit conventions).
+validate_tag() {
     local tag_name="$1"
     local tag_sha="$2"
     # Annotated tags are objects of type `tag`; lightweight tags point
     # directly at a commit and have no message to validate.
     local tag_type
     tag_type=$(git cat-file -t "$tag_sha" 2>/dev/null || echo "")
-    if [ "$tag_type" != "tag" ]; then
-        return 0
-    fi
 
-    local tag_msg
-    tag_msg=$(git for-each-ref --format='%(contents)' "refs/tags/$tag_name")
+    if [ "$tag_type" = "tag" ]; then
+        # --- Annotated tag ---
+        # 1. Tagger identity: the email recorded on the tag object must be
+        #    in the allowlist. %(taggeremail) returns `<email>` with angle
+        #    brackets; strip them so email_in_allowlist compares bare.
+        local tagger_email
+        tagger_email=$(git for-each-ref --format='%(taggeremail)' "refs/tags/$tag_name" \
+            | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//; s/^<//; s/>$//')
+        if [ -n "$tagger_email" ] && ! email_in_allowlist "$tagger_email"; then
+            echo "pre-push: reject" >&2
+            echo "  tag $tag_name tagger email '$tagger_email' not in allowlist." >&2
+            echo "  allowed emails:" >&2
+            get_identities | grep -oE '<[^>]+>' | tr -d '<>' \
+                | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | sed 's/^/    /' >&2
+            echo "  fix: git config user.email <one of the above>, then re-create the tag." >&2
+            exit 1
+        fi
 
-    # ASCII-only check.
-    if printf '%s' "$tag_msg" | LC_ALL=C tr -d '\000-\177' | grep -q .; then
-        echo "pre-push: reject" >&2
-        echo "  tag $tag_name message contains non-ASCII characters; English only" >&2
-        exit 1
-    fi
-
-    # Forbidden-token check (normalized match).
-    if message_has_forbidden "$tag_msg"; then
-        echo "pre-push: reject" >&2
-        echo "  tag $tag_name message contains a forbidden token" >&2
-        exit 1
+        # 2. Message: ASCII-only + forbidden-token check.
+        local tag_msg
+        tag_msg=$(git for-each-ref --format='%(contents)' "refs/tags/$tag_name")
+        if printf '%s' "$tag_msg" | LC_ALL=C tr -d '\000-\177' | grep -q .; then
+            echo "pre-push: reject" >&2
+            echo "  tag $tag_name message contains non-ASCII characters; English only" >&2
+            exit 1
+        fi
+        if message_has_forbidden "$tag_msg"; then
+            echo "pre-push: reject" >&2
+            echo "  tag $tag_name message contains a forbidden token" >&2
+            exit 1
+        fi
+    else
+        # --- Lightweight tag ---
+        # No tagger field and no message; the tag is just a named pointer
+        # to a commit. Enforce that the commit it points to has author AND
+        # committer email in the allowlist, so a tag cannot be used to
+        # bless an unverified commit.
+        local ae ce
+        ae=$(git log -1 --format='%ae' "$tag_sha" 2>/dev/null || echo "")
+        ce=$(git log -1 --format='%ce' "$tag_sha" 2>/dev/null || echo "")
+        if [ -n "$ae" ] && [ -n "$ce" ]; then
+            if ! email_in_allowlist "$ae" || ! email_in_allowlist "$ce"; then
+                echo "pre-push: reject" >&2
+                echo "  lightweight tag $tag_name points at commit with:" >&2
+                echo "    author email    = $ae" >&2
+                echo "    committer email = $ce" >&2
+                echo "  one or both are not in the allowlist." >&2
+                echo "  allowed emails:" >&2
+                get_identities | grep -oE '<[^>]+>' | tr -d '<>' \
+                    | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' | sed 's/^/    /' >&2
+                exit 1
+            fi
+        fi
     fi
 }
 
@@ -132,10 +174,11 @@ last_range=""
 while read -r local_ref local_sha remote_ref remote_sha; do
     case "$remote_ref" in
         refs/tags/*)
-            # Tag push: skip branch + identity checks. Validate message
-            # for annotated tags only; lightweight tags carry no message.
+            # Tag push: skip branch + forbidden-token-range checks. For
+            # annotated tags validate tagger identity + message; for
+            # lightweight tags validate the pointed-to commit identity.
             tag_name="${remote_ref#refs/tags/}"
-            validate_tag_message "$tag_name" "$local_sha"
+            validate_tag "$tag_name" "$local_sha"
             continue
             ;;
         refs/heads/*)
