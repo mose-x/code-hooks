@@ -26,6 +26,10 @@ HOOKS_DIR="$(cd "$(dirname "$0")" && pwd)"
 
 # shellcheck source=load-config.sh
 . "$HOOKS_DIR/load-config.sh"
+# shellcheck source=lang-detector.sh
+. "$HOOKS_DIR/lang-detector.sh"
+# shellcheck source=lang-runner.sh
+. "$HOOKS_DIR/lang-runner.sh"
 
 # Fail closed: missing config or empty required sections.
 if [ "$config_load_ok" != "1" ]; then
@@ -52,24 +56,40 @@ if ! config_section_nonempty forbidden_tokens; then
     exit 1
 fi
 
-# `cargo test` is expensive; run it once for the whole push, not per ref.
-# We only run it if the push contains source changes -- detect by checking
-# whether any .rs file differs between the push range and its merge base.
+# Run language tests once for the whole push, not per ref.
+# Detects languages from files changed in the push range and runs each
+# language's `test` stage from hook-rules.conf [lang_tools]. A docs-only
+# push (no source suffix) skips every test suite.
 run_tests_if_needed() {
     local range="$1"
-    # For a new branch (range == single sha), compare against origin/dev.
+    # For a new branch (range == single sha), find a remote-tracking base
+    # to diff against. Try origin/HEAD (remote default branch) first,
+    # then origin/main / origin/master. Fall back to the tip itself if
+    # no remote ref exists (orphan branch).
     local diff_range="$range"
     if ! git rev-parse --verify "$range" >/dev/null 2>&1; then
-        diff_range="origin/dev..$range"
-    fi
-    # Only run tests if .rs files changed in the push range.
-    if git diff --name-only "$diff_range" -- 2>/dev/null | grep -q '\.rs$'; then
-        echo "pre-push: running cargo test --all (.rs changes detected)" >&2
-        if ! cargo test --all; then
-            echo "pre-push: reject" >&2
-            echo "  cargo test failed. Fix the failing tests before pushing." >&2
-            exit 1
+        local base=""
+        for ref in origin/HEAD origin/main origin/master; do
+            if git rev-parse --verify "$ref" >/dev/null 2>&1; then
+                base="$ref"
+                break
+            fi
+        done
+        if [ -n "$base" ]; then
+            diff_range="$base..$range"
+        else
+            diff_range="$range"
         fi
+    fi
+    local changed_files
+    changed_files=$(git diff --name-only "$diff_range" -- 2>/dev/null)
+    if [ -z "$changed_files" ]; then
+        return 0
+    fi
+    if ! run_all_langs_stage test "$changed_files"; then
+        echo "pre-push: reject" >&2
+        echo "  a language test suite failed. Fix the failing tests before pushing." >&2
+        exit 1
     fi
 }
 
@@ -197,26 +217,22 @@ while read -r local_ref local_sha remote_ref remote_sha; do
     # rewritten history is caught too. Print the first offender so the
     # user knows which commit to rewrite.
     #
-    # awk reads `allowed_emails` from a temp file (passed as argv[1]) so
-    # the comparison can't be confused by stdin content. Two emails per
-    # commit line; either one not in the allowlist rejects the commit.
+    # Implementation note: we avoid gawk's 3-arg match() with capture
+    # groups (match(line, /pat/, arr)) because BSD awk on macOS does not
+    # support it and silently produces empty captures. Instead git log
+    # emits `h|ae|ce|an|cn` pipe-delimited fields and bash parses them.
     allowed_tmp=$(mktemp)
     get_identities | grep -oE '<[^>]+>' | tr -d '<>' \
         | sed -E 's/^[[:space:]]+//; s/[[:space:]]+$//' > "$allowed_tmp"
-    bad_identity=$(git log --format='%h | author: %an <%ae> | committer: %cn <%ce>' "$range" \
-        | awk -v req="$allowed_tmp" '
-            BEGIN {
-                while ((getline line < req) > 0) allowed[line] = 1
-                close(req)
-            }
-            {
-                line=$0
-                ae=""; ce=""
-                if (match(line, /author: [^<]*<([^>]+)>/, a)) ae=a[1]
-                if (match(line, /committer: [^<]*<([^>]+)>/, c)) ce=c[1]
-                if (!(ae in allowed) || !(ce in allowed)) { print; exit }
-            }
-        ')
+    bad_identity=""
+    while IFS='|' read -r h ae ce an cn; do
+        # Skip empty (e.g. blank trailing line)
+        [ -z "$h" ] && continue
+        if ! grep -Fxq -- "$ae" "$allowed_tmp" || ! grep -Fxq -- "$ce" "$allowed_tmp"; then
+            bad_identity="$h | author: $an <$ae> | committer: $cn <$ce>"
+            break
+        fi
+    done < <(git log --format='%h|%ae|%ce|%an|%cn' "$range")
     rm -f "$allowed_tmp"
     if [ -n "$bad_identity" ]; then
         echo "pre-push: reject" >&2

@@ -11,9 +11,9 @@ wires up the workdir in one shot.
 
 | Hook | Enforces |
 |---|---|
-| `pre-commit` | author + committer email must be in `hook-rules.conf [identities]`; `cargo fmt --check` + `cargo clippy -D warnings` when `src/**/*.rs` is staged |
+| `pre-commit` | author + committer email must be in `hook-rules.conf [identities]`; per-language `fmt` + `lint` from `[lang_tools]` when source files of that language are staged |
 | `commit-msg` | subject <= `[rules] max_subject_length`; no trailing `.`; conventional-commits type from `[commit_types]`; no `[forbidden_tokens]` (incl. variants); pure ASCII; total message <= `[rules] max_total_message_length` |
-| `pre-push` | only branches in `[allowed_branches]`; annotated tag messages must be ASCII + token-clean; every pushed commit's author AND committer email must be in `[identities]`; no forbidden tokens in push range; `cargo test --all` when `.rs` files changed |
+| `pre-push` | only branches in `[allowed_branches]`; annotated tag messages must be ASCII + token-clean; every pushed commit's author AND committer email must be in `[identities]`; no forbidden tokens in push range; per-language `test` from `[lang_tools]` when source files of that language changed in the push range |
 
 ### Why each rule exists
 
@@ -32,8 +32,12 @@ wires up the workdir in one shot.
   normalizes non-alphanumeric characters to a single space and lowercases
   before substring match, so `trae-agent`, `traeagent`, `Co-Authored-By`, etc.
   all hit the same entry.
-- **Cargo checks gated on `src/**/*.rs`**: docs/hook-only commits skip the
-  multi-second compile; only real source changes pay for fmt+clippy+test.
+- **Language tools gated on file suffix**: docs/hook-only commits skip
+  every fmt/lint/test suite; only real source changes pay for toolchain
+  invocation. Detection is by staged/changed file suffix, not by manifest
+  existence, so a README-only commit on a Rust project still skips cargo.
+  Supported languages: Rust, Go, Node.js (React/Vue/Svelte/...), Python,
+  PHP, Java, Perl, C#. wails projects are detected as `go` + `nodejs`.
 
 ## Configuration: `hook-rules.conf`
 
@@ -74,6 +78,18 @@ revert
 [rules]
 max_subject_length=100
 max_total_message_length=200
+
+[lang_tools]
+# Format: lang:stage=command   ($FILES = staged/changed files)
+rust:fmt=cargo fmt --check
+rust:lint=cargo clippy --all-targets -- -D warnings
+rust:test=cargo test --all
+go:fmt=gofmt -l $FILES
+go:test=go test ./...
+nodejs:fmt=npx prettier --check $FILES
+nodejs:test=npm test
+java:test=mvn test
+# leave a stage empty to disable it for a language
 ```
 
 ### Section reference
@@ -85,14 +101,60 @@ max_total_message_length=200
 | `[forbidden_tokens]` | literal token per line; normalized match | pre-push, commit-msg |
 | `[commit_types]` | one conventional-commit type per line | commit-msg |
 | `[rules]` | `key=value` scalar rules | commit-msg |
+| `[lang_tools]` | `lang:stage=command` per line | pre-commit (fmt, lint), pre-push (test) |
 
 ### Section rules
 
 - `#` starts a comment; blank lines are ignored.
 - Lines starting with `[` are section headers. Section order is not significant.
-- Only `[rules]` uses `key=value`; other sections are list-of-entries.
+- `[rules]` uses `key=value`; `[lang_tools]` uses `lang:stage=command`;
+  other sections are list-of-entries.
 - **Only the email is enforced** for `[identities]` -- the name is informational
   and not checked, so a contributor's local `user.name` may differ from the file.
+
+### Language tools (`[lang_tools]`)
+
+Per-language fmt / lint / test commands. Format: `lang:stage=command`.
+
+- **`lang`** in `{rust, go, nodejs, java, php, python, perl, csharp}`.
+- **`stage`** in `{fmt, lint, test}`. `fmt` and `lint` run in pre-commit;
+  `test` runs in pre-push.
+- **`$FILES`** is substituted with the staged/changed file list (space-
+  separated, auto-quoted) so fmt/lint target only touched files. Commands
+  that ignore `$FILES` (e.g. `cargo fmt --check`, `pytest`) scan the whole
+  repo -- fine for most toolchains.
+- **Empty value** (`lang:stage=`) disables that stage for that language
+  (e.g. Java fmt/lint are intentionally empty: per-project style).
+- **Missing section** -> all language tools skipped (docs-only fast path;
+  fresh clones of code-hooks itself also skip).
+- **Tool not in PATH** -> fail closed with an install hint. This matches
+  the identity fail-closed philosophy: if your commit touches `.go` you
+  must have `go` installed locally, otherwise local and CI diverge.
+  `cargo` / `npx` / `npm` / `mvn` / `gradle` are treated as always-
+  available (they self-resolve subcommands).
+
+Supported languages and default commands:
+
+| Language | fmt | lint | test |
+|---|---|---|---|
+| Rust | `cargo fmt --check` | `cargo clippy --all-targets -- -D warnings` | `cargo test --all` |
+| Go | `gofmt -l $FILES` | `go vet ./...` | `go test ./...` |
+| Node.js (React/Vue/Svelte/Next/Nuxt/...) | `npx prettier --check $FILES` | `npx eslint $FILES` | `npm test` |
+| Python | `ruff format --check .` | `ruff check .` | `pytest` |
+| PHP | `./vendor/bin/php-cs-fixer fix --dry-run` | `./vendor/bin/phpstan analyse` | `./vendor/bin/phpunit` |
+| Java | (empty) | (empty) | `mvn test` |
+| Perl | (none) | `perlcritic $FILES` | `prove -r t` |
+| C# | `dotnet format --verify-no-changes` | `dotnet build -warnaserror` | `dotnet test` |
+
+**wails projects**: a wails app has Go backend + JS/TS frontend under
+`frontend/`. It is detected as `go` + `nodejs` and both toolchains run.
+`wails.json` is not required for detection -- it only affects which
+nodejs commands are configured in this section.
+
+**Vue / React / Svelte / etc.**: these are all Node.js -- they share the
+same `nodejs` entry. The framework-specific lint plugin (eslint-plugin-vue,
+eslint-plugin-react, ...) is picked up from the consumer repo's eslint
+config, so code-hooks does not need a separate entry per framework.
 
 ### Branch matching (`[allowed_branches]`)
 
@@ -126,7 +188,7 @@ max_total_message_length=200
   contain any `[forbidden_tokens]` entry. Length and conventional-prefix rules
   are not applied (tags do not follow commit conventions).
 - Lightweight tags: pass through (they carry no message).
-- Tag pushes do not trigger `cargo test` (tags change metadata, not source).
+- Tag pushes do not trigger language `test` suites (tags change metadata, not source).
 - The CI workflow does not validate tags (it only runs on `pull_request`
   events). Tag validation is local-hook only; `--no-verify` bypasses it.
 
@@ -150,6 +212,12 @@ If `hook-rules.conf` is missing, or any required section (`[identities]`,
 empty, **the corresponding hook rejects every commit/push**. This is
 intentional: a fresh clone of code-hooks with no rules configured must not
 silently run with enforcement disabled. Fix it by populating the section.
+
+`[lang_tools]` is **not** fail-closed: a missing or empty section simply
+skips all language fmt/lint/test suites (docs-only fast path). This is
+so a fresh clone of code-hooks itself -- which has no Rust/Go/... source
+to test -- does not reject its own commits. Per-language tool-missing is
+still fail-closed (a `.go` commit with no `go` binary is rejected).
 
 ### Adding a new contributor
 
