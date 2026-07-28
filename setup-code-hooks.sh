@@ -4,12 +4,18 @@
 # Idempotent: safe to re-run. Reuses credential.helper=store if present.
 #
 # Usage:
-#   bash /root/.code-hooks/setup-code-hooks.sh [path-to-target-workdir]
+#   bash setup-code-hooks.sh [path-to-target-workdir]
 #   # or, from a fresh sandbox with nothing cloned yet:
 #   curl -fsSL https://raw.githubusercontent.com/mose-x/code-hooks/main/setup-code-hooks.sh | bash -s -- /workspace
+#
+# Override the hooks repo clone location with CODE_HOOKS_DIR (defaults to
+# $HOME/.code-hooks, or /root/.code-hooks when HOME is unset, e.g. in some
+# CI runners). Non-root users and macOS dev machines get a sensible default
+# without editing this script.
 set -euo pipefail
 
-HOOKS_DIR="/root/.code-hooks"
+HOOKS_DIR="${CODE_HOOKS_DIR:-${HOME:+$HOME/.code-hooks}}"
+HOOKS_DIR="${HOOKS_DIR:-/root/.code-hooks}"
 WORKDIR="${1:-/workspace}"
 
 # If this script is running but /root/.code-hooks doesn't exist yet (the
