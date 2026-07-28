@@ -3,9 +3,34 @@
 Public repo hosting shared git hooks for any repo that adopts them.
 
 The hooks themselves (`pre-commit`, `commit-msg`, `pre-push`) are never committed
-into the consumer repo; instead each sandbox/workdir points at this repo via
+into the consumer repo; instead each workdir points at this repo via
 `core.hooksPath`. A bootstrap script (`setup-code-hooks.sh`) clones this repo and
 wires up the workdir in one shot.
+
+## Quick start
+
+Three steps, ~2 minutes:
+
+```bash
+# 1. Install local hooks into your repo (idempotent, safe to re-run)
+git clone https://github.com/mose-x/code-hooks.git "$HOME/.code-hooks"
+bash "$HOME/.code-hooks/setup-code-hooks.sh" /path/to/your-repo
+
+# 2. Set your git identity to an email listed in hook-rules.conf [identities]
+cd /path/to/your-repo
+git config user.email "your@email"
+
+# 3. Wire CI (one line in .github/workflows/ci.yml):
+#    jobs:
+#      commit-lint:
+#        uses: mose-x/code-hooks/.github/workflows/commit-lint.yml@main
+#    Then set branch protection to require the "commit-lint / commit-lint"
+#    status check on your protected branch.
+```
+
+After step 1, every `git commit` / `git push` in your repo runs the hooks
+locally. After step 3, CI enforces the same rules on PRs (the layer that
+`--no-verify` cannot bypass).
 
 ## Hooks
 
@@ -36,8 +61,12 @@ wires up the workdir in one shot.
   every fmt/lint/test suite; only real source changes pay for toolchain
   invocation. Detection is by staged/changed file suffix, not by manifest
   existence, so a README-only commit on a Rust project still skips cargo.
-  Supported languages: Rust, Go, Node.js (React/Vue/Svelte/...), Python,
-  PHP, Java, Perl, C#. wails projects are detected as `go` + `nodejs`.
+  **Five languages are configured out-of-box**: Rust, Go, Node.js
+  (React/Vue/Svelte/...), Python, Java. The detector also recognises
+  PHP, Perl, C# suffixes -- these become active the moment a consumer
+  adds the corresponding `[lang_tools]` entries (no code change needed;
+  see [Adding or customizing a language](#adding-or-customizing-a-language)).
+  wails projects are detected as `go` + `nodejs`.
 
 ## Configuration: `hook-rules.conf`
 
@@ -81,13 +110,20 @@ max_total_message_length=200
 
 [lang_tools]
 # Format: lang:stage=command   ($FILES = staged/changed files)
+# Five languages configured out-of-box; add more (php, perl, csharp, ...)
+# by following "Adding or customizing a language" below.
 rust:fmt=cargo fmt --check
 rust:lint=cargo clippy --all-targets -- -D warnings
 rust:test=cargo test --all
 go:fmt=gofmt -l $FILES
+go:lint=go vet ./...
 go:test=go test ./...
 nodejs:fmt=npx prettier --check $FILES
+nodejs:lint=npx eslint $FILES
 nodejs:test=npm test
+python:fmt=ruff format --check .
+python:lint=ruff check .
+python:test=pytest
 java:test=mvn test
 # leave a stage empty to disable it for a language
 ```
@@ -116,7 +152,9 @@ java:test=mvn test
 
 Per-language fmt / lint / test commands. Format: `lang:stage=command`.
 
-- **`lang`** in `{rust, go, nodejs, java, php, python, perl, csharp}`.
+- **`lang`** -- any language key. Out-of-box: `{rust, go, nodejs, python, java}`.
+  The detector also recognises `{php, perl, csharp}`; add entries for them
+  to enable (see [Adding or customizing a language](#adding-or-customizing-a-language)).
 - **`stage`** in `{fmt, lint, test}`. `fmt` and `lint` run in pre-commit;
   `test` runs in pre-push.
 - **`$FILES`** is substituted with the staged/changed file list (space-
@@ -139,16 +177,24 @@ Per-language fmt / lint / test commands. Format: `lang:stage=command`.
 
 Supported languages and default commands:
 
-| Language | fmt | lint | test |
-|---|---|---|---|
-| Rust | `cargo fmt --check` | `cargo clippy --all-targets -- -D warnings` | `cargo test --all` |
-| Go | `gofmt -l $FILES` | `go vet ./...` | `go test ./...` |
-| Node.js (React/Vue/Svelte/Next/Nuxt/...) | `npx prettier --check $FILES` | `npx eslint $FILES` | `npm test` |
-| Python | `ruff format --check .` | `ruff check .` | `pytest` |
-| PHP | `./vendor/bin/php-cs-fixer fix --dry-run` | `./vendor/bin/phpstan analyse` | `./vendor/bin/phpunit` |
-| Java | (empty) | (empty) | `mvn test` |
-| Perl | (none) | `perlcritic $FILES` | `prove -r t` |
-| C# | `dotnet format --verify-no-changes` | `dotnet build -warnaserror` | `dotnet test` |
+**Out-of-box (entries shipped in `hook-rules.conf`):**
+
+| Language | Detected by | fmt | lint | test |
+|---|---|---|---|---|
+| Rust | `.rs` | `cargo fmt --check` | `cargo clippy --all-targets -- -D warnings` | `cargo test --all` |
+| Go | `.go` | `gofmt -l $FILES` | `go vet ./...` | `go test ./...` |
+| Node.js | `.js .ts .jsx .tsx .mjs .cjs .vue .svelte .astro` | `npx prettier --check $FILES` | `npx eslint $FILES` | `npm test` |
+| Python | `.py` | `ruff format --check .` | `ruff check .` | `pytest` |
+| Java | `.java .kt` | (empty) | (empty) | `mvn test` |
+
+**Recognised but not configured** (suffix detected; add `[lang_tools]` entries
+to enable -- no code change needed):
+
+| Language | Detected by | Suggested fmt | Suggested lint | Suggested test |
+|---|---|---|---|---|
+| PHP | `.php` | `./vendor/bin/php-cs-fixer fix --dry-run` | `./vendor/bin/phpstan analyse` | `./vendor/bin/phpunit` |
+| Perl | `.pl .pm .t` | (none) | `perlcritic $FILES` | `prove -r t` |
+| C# | `.cs` | `dotnet format --verify-no-changes` | `dotnet build -warnaserror` | `dotnet test` |
 
 **wails projects**: a wails app has Go backend + JS/TS frontend under
 `frontend/`. It is detected as `go` + `nodejs` and both toolchains run.
@@ -165,7 +211,21 @@ config, so code-hooks does not need a separate entry per framework.
 To change a tool command for an existing language, edit the
 `lang:stage=command` line in `[lang_tools]`. No code change needed.
 
-To add a new language (e.g. Ruby):
+To enable a **recognised-but-unconfigured** language (PHP / Perl / C#),
+just add `[lang_tools]` entries -- the detector already knows those
+suffixes, so **no code change is needed**:
+
+```ini
+php:fmt=./vendor/bin/php-cs-fixer fix --dry-run
+php:lint=./vendor/bin/phpstan analyse
+php:test=./vendor/bin/phpunit
+```
+
+Commit the config change; after merge, every consumer repo that touches
+`.php` files will run the PHP toolchain automatically.
+
+To add a **brand-new language** whose suffix is not yet recognised
+(e.g. Ruby `.rb`):
 
 1. **Add the suffix to `lang-detector.sh`** so files are detected. This
    is the only code change required:
@@ -227,8 +287,12 @@ commands run".
   lightweight tag cannot bless an unverified commit (e.g. one made with
   `--no-verify` and a stray `user.email`).
 - Tag pushes do not trigger language `test` suites (tags change metadata, not source).
-- The CI workflow does not validate tags (it only runs on `pull_request`
-  events). Tag validation is local-hook only; `--no-verify` bypasses it.
+- **CI also validates annotated tags** in the PR range: the `commit-lint`
+  job scans any annotated tag whose target commit falls within
+  `BASE..HEAD`, checking tagger email, ASCII-only message, and forbidden
+  tokens. This covers the `--no-verify` bypass path for tags pushed via PR.
+  (Tags pushed directly to the remote without a PR are still GitHub-side
+  only -- configure tag protection rules there.)
 
 ### Single source of truth (no local override)
 
@@ -259,32 +323,81 @@ still fail-closed (a `.go` commit with no `go` binary is rejected).
 
 ### Adding a new contributor
 
+**All contributor identities are managed solely in `code-hooks`'s
+`hook-rules.conf [identities]` -- consumer repos never edit identity
+configuration.** A single allowlist is shared by every consumer repo's
+pre-commit, pre-push, and CI.
+
 1. Add a line `Their Name <their@email>` to the `[identities]` section of
-   `hook-rules.conf`.
+   `hook-rules.conf` in the `code-hooks` repo.
 2. Commit and push to `code-hooks` (the contributor's PRs to consumer repos
-   will start passing CI once `@main` is updated).
+   will start passing CI once `code-hooks@main` is updated).
 3. The contributor runs `git config user.email their@email` in their local
    consumer-repo checkout so pre-commit passes locally. (CI will pass too,
    since the email is now in the allowlist on GitHub.)
 
-## Activate in a fresh sandbox
+## Install local hooks
+
+Two install paths depending on your environment. After install, every
+`git commit` / `git push` in the target repo runs the hooks locally.
+
+### A. Standard setup (any machine: macOS / Linux / CI runner)
+
+```bash
+# Clone code-hooks to a stable location (default: $HOME/.code-hooks;
+# override with CODE_HOOKS_DIR=/custom/path)
+git clone https://github.com/mose-x/code-hooks.git "$HOME/.code-hooks"
+
+# Install hooks into your repo (idempotent, safe to re-run)
+bash "$HOME/.code-hooks/setup-code-hooks.sh" /path/to/your-repo
+
+# Set your git identity to an email listed in hook-rules.conf [identities]
+cd /path/to/your-repo
+git config user.email "your@email"
+```
+
+`setup-code-hooks.sh` sets `core.hooksPath` on the target repo, pulls
+`code-hooks` to the latest `main` on each run, and pins the first identity
+from `[identities]` into the repo's `user.name` / `user.email` so pre-commit
+passes out-of-box. If your email is NOT the first entry, set it manually
+with `git config user.email`.
+
+### B. Sandbox setup (ephemeral TRAE / CI environments)
 
 The sandbox network allows `git clone` from `github.com` (but blocks
-`raw.githubusercontent.com`), so bootstrap with two commands:
+`raw.githubusercontent.com`). `$HOME` may be `/root` or reset between
+sessions, so pin the clone path explicitly:
 
 ```bash
 git clone https://github.com/mose-x/code-hooks.git /root/.code-hooks && \
 bash /root/.code-hooks/setup-code-hooks.sh /workspace
 ```
 
-The script is idempotent -- re-running just does `pull --ff-only` and refreshes
-the workdir config. It also pins the first identity from `hook-rules.conf
-[identities]` into the workdir's `user.name` / `user.email` so `pre-commit` is
-satisfied without any manual `git config`. Contributors whose email is NOT
-the first entry should set their own `git config user.email` after running the
-script.
+Replace `/workspace` with the actual target workdir path. If the sandbox
+resets `$HOME`, re-run the two commands to restore hooks -- the script is
+idempotent.
 
-Replace `/workspace` with the actual target workdir path if different.
+### Language toolchain requirements
+
+The hooks only invoke a language's toolchain when files of that language are
+staged/changed. A docs-only commit skips all tools. When a tool is missing
+from `PATH` but its language is triggered, the hook **fails closed** with an
+install hint (so local and CI do not diverge).
+
+| Language | Detected by | fmt requires | lint requires | test requires |
+|---|---|---|---|---|
+| Rust | `.rs` | `cargo` (rustup) | `cargo` (rustup) | `cargo` (rustup) |
+| Go | `.go` | `gofmt` (bundled with Go) | `go` (Go toolchain) | `go` (Go toolchain) |
+| Node.js | `.js .ts .jsx .tsx .mjs .cjs .vue .svelte .astro` | `npx` (Node.js + npm) | `npx` (Node.js + npm) | `npm` (Node.js) |
+| Python | `.py` | `ruff` (`pip install ruff`) | `ruff` (`pip install ruff`) | `pytest` (`pip install pytest`) |
+| Java | `.java .kt` | (disabled) | (disabled) | `mvn` (Maven) |
+
+For PHP / Perl / C# requirements, see the suggested commands in the
+[language table above](#language-tools-lang_tools) -- they become active
+once you add the corresponding `[lang_tools]` entries.
+
+`cargo` / `npx` / `npm` / `mvn` are treated as always-available (they
+self-resolve subcommands); other binaries are checked explicitly.
 
 ## CI enforcement (reusable workflow)
 
@@ -342,8 +455,9 @@ propagates to every consumer repo without each repo touching its CI.
 ## Notes
 
 - `~/.git-credentials` (the GitHub PAT) and `/root/.code-hooks/` live under
-  `/root` and do not persist across sandbox resets; re-run the bootstrap
-  above at the start of each new session.
+  `/root` and do not persist across sandbox resets; re-run the
+  [Sandbox setup](#b-sandbox-setup-ephemeral-trae--ci-environments) commands
+  at the start of each new session.
 - The hooks repo itself is pushed using the same PAT / identity as the consumer repos.
 - `--no-verify` bypasses local hooks entirely (git design). The pre-push email
   scan is the last local checkpoint; for true enforcement, add GitHub branch

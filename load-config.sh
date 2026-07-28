@@ -67,6 +67,10 @@ get_commit_types() {
 
 # Print the command for <lang>:<stage> from [lang_tools].
 # Line format in hook-rules.conf: `lang:stage=command`
+# Out-of-box configured languages: rust, go, nodejs, python, java.
+# Other languages (php, perl, csharp, ...) are recognised by
+# lang-detector.sh but have no [lang_tools] entry until a consumer adds
+# one -- see README "Adding or customizing a language".
 # Returns empty string if the section, lang, or stage is missing, or if
 # the value is intentionally empty (disabled stage).
 get_lang_tool() {
