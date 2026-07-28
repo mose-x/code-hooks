@@ -48,8 +48,21 @@ run_lang_stage() {
     local cmd
 
     cmd=$(get_lang_tool "$lang" "$stage")
-    # Empty value -> stage intentionally disabled for this language.
-    [ -z "$cmd" ] && return 0
+    # Empty value: two distinct cases.
+    if [ -z "$cmd" ]; then
+        if has_lang_any_tool "$lang"; then
+            # Intentional disable (entry exists with empty value, e.g.
+            # `java:fmt=`). Silent skip, same as before.
+            return 0
+        fi
+        # Detected language but no [lang_tools] entry at all. Print a
+        # hint so the user knows their .php/.pl/.cs/... changes are not
+        # being checked, and how to enable them. Non-fatal (return 0):
+        # an unconfigured language is not a policy violation.
+        echo "  $lang $stage: detected but no [lang_tools] entry -- skipped." >&2
+        echo "    to enable, add '${lang}:${stage}=<cmd>' to hook-rules.conf" >&2
+        return 0
+    fi
 
     if ! _lang_tool_available "$cmd"; then
         local tool="${cmd%% *}"
