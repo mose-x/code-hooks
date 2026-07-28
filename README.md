@@ -13,7 +13,7 @@ wires up the workdir in one shot.
 |---|---|
 | `pre-commit` | author + committer email must be in `hook-rules.conf [identities]`; per-language `fmt` + `lint` from `[lang_tools]` when source files of that language are staged |
 | `commit-msg` | subject <= `[rules] max_subject_length`; no trailing `.`; conventional-commits type from `[commit_types]`; no `[forbidden_tokens]` (incl. variants); pure ASCII; total message <= `[rules] max_total_message_length` |
-| `pre-push` | only branches in `[allowed_branches]`; annotated tag messages must be ASCII + token-clean; every pushed commit's author AND committer email must be in `[identities]`; no forbidden tokens in push range; per-language `test` from `[lang_tools]` when source files of that language changed in the push range |
+| `pre-push` | only branches in `[allowed_branches]`; annotated tag tagger email in `[identities]` + tag message ASCII + token-clean; lightweight tag's commit author/committer email in `[identities]`; every pushed commit's author AND committer email must be in `[identities]`; no forbidden tokens in push range; per-language `test` from `[lang_tools]` when source files of that language changed in the push range |
 
 ### Why each rule exists
 
@@ -216,12 +216,16 @@ commands run".
 
 `pre-push` distinguishes tag pushes from branch pushes:
 
-- Tag pushes (`refs/tags/*`) skip the branch and identity checks (tags are not
-  branch commits).
-- Annotated tags: the tag message must be ASCII-only English and must not
-  contain any `[forbidden_tokens]` entry. Length and conventional-prefix rules
-  are not applied (tags do not follow commit conventions).
-- Lightweight tags: pass through (they carry no message).
+- Tag pushes (`refs/tags/*`) skip the branch allowlist and the push-range
+  forbidden-token / identity scans (tags are not branch commits).
+- **Annotated tags**: the tagger email must be in `[identities]`, and the tag
+  message must be ASCII-only English and must not contain any
+  `[forbidden_tokens]` entry. Length and conventional-prefix rules are not
+  applied (tags do not follow commit conventions).
+- **Lightweight tags**: no tagger field and no message, but the commit they
+  point to must have author AND committer email in `[identities]` -- so a
+  lightweight tag cannot bless an unverified commit (e.g. one made with
+  `--no-verify` and a stray `user.email`).
 - Tag pushes do not trigger language `test` suites (tags change metadata, not source).
 - The CI workflow does not validate tags (it only runs on `pull_request`
   events). Tag validation is local-hook only; `--no-verify` bypasses it.
