@@ -156,6 +156,36 @@ same `nodejs` entry. The framework-specific lint plugin (eslint-plugin-vue,
 eslint-plugin-react, ...) is picked up from the consumer repo's eslint
 config, so code-hooks does not need a separate entry per framework.
 
+#### Adding or customizing a language
+
+To change a tool command for an existing language, edit the
+`lang:stage=command` line in `[lang_tools]`. No code change needed.
+
+To add a new language (e.g. Ruby):
+
+1. **Add the suffix to `lang-detector.sh`** so files are detected. This
+   is the only code change required:
+
+   ```bash
+   printf '%s\n' "$files" | grep -qE '\.rb$' && langs+=("ruby")
+   ```
+
+2. **Add `[lang_tools]` entries** for the new language in `hook-rules.conf`:
+
+   ```ini
+   ruby:fmt=rubocop -x --auto-correct
+   ruby:lint=rubocop
+   ruby:test=rspec
+   ```
+
+3. Commit both changes in the same PR. After merge, every consumer repo
+   that touches `.rb` files will run the Ruby toolchain automatically.
+
+Note: step 1 is required because language detection is by file suffix,
+not by reading `[lang_tools]` keys. This keeps detection cheap (one grep
+per language) and decouples "which files trigger tools" from "which
+commands run".
+
 ### Branch matching (`[allowed_branches]`)
 
 - **Exact match**: a literal branch name (e.g. `dev`) matches only `dev`.
