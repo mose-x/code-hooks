@@ -65,12 +65,19 @@ fi
 # push (no source suffix) skips every test suite.
 run_tests_if_needed() {
     local range="$1"
-    # For a new branch (range == single sha), find a remote-tracking base
-    # to diff against. Try origin/HEAD (remote default branch) first,
-    # then origin/main / origin/master. Fall back to the tip itself if
-    # no remote ref exists (orphan branch).
+    # `range` arrives in one of two forms:
+    #   - already a range:  "<base>..<tip>"  (normal branch push)
+    #   - a single sha:     "<tip>"          (new branch / orphan)
+    # Only the single-sha case needs a remote-tracking base prepended.
+    # Previous logic used `git rev-parse --verify "$range"`, but that
+    # exits non-zero for `A..B` too (--verify wants a single revision),
+    # so every push entered the base-lookup branch and re-prefixed an
+    # already-valid range, producing `origin/HEAD..origin/HEAD..tip`
+    # which `git diff` rejected (bad revision) -> hook died at 128
+    # under `set -e`, blocking all new-branch pushes. Detect range
+    # form by the `..` separator instead.
     local diff_range="$range"
-    if ! git rev-parse --verify "$range" >/dev/null 2>&1; then
+    if [[ "$range" != *..* ]]; then
         local base=""
         for ref in origin/HEAD origin/main origin/master; do
             if git rev-parse --verify "$ref" >/dev/null 2>&1; then
