@@ -112,6 +112,23 @@ get_rule() {
     '
 }
 
+# 0 if [lang_tools] has at least one entry whose lang matches <lang>
+# (any stage, value may be empty). Distinguishes "no entry at all"
+# (detected language is unconfigured -> lang-runner prints a hint) from
+# "entry with empty value" (intentional disable -> silent skip).
+# Format checked: `lang:stage=...` (colon before `=`).
+has_lang_any_tool() {
+    local lang="$1"
+    local line l colon
+    while IFS= read -r line; do
+        colon=$(printf '%s' "$line" | awk '{ i=index($0,":"); if(i>0) print substr($0,1,i-1) }')
+        if [ "$colon" = "$lang" ]; then
+            return 0
+        fi
+    done < <(_section_lines lang_tools)
+    return 1
+}
+
 # 0 if section <s> exists and has at least one non-comment entry.
 config_section_nonempty() {
     local section="$1"
