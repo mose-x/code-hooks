@@ -62,22 +62,21 @@ if [ -n "$committer_email" ] && ! email_in_allowlist "$committer_email"; then
     exit 1
 fi
 
-# --- Code quality: only when Rust sources are staged. ---
-# `--cached --name-only` lists staged files; we look for any .rs under src/.
-# We specifically want .rs files so a README-only / hook-only commit skips
-# cargo entirely (avoids a multi-second compile for trivial commits).
-if git diff --cached --name-only --diff-filter=ACMR | grep -q '^src/.*\.rs$'; then
-    echo "pre-commit: running cargo fmt --check (staged .rs files detected)" >&2
-    if ! cargo fmt --check; then
-        echo "pre-commit: reject" >&2
-        echo "  cargo fmt found unformatted code. Run 'cargo fmt' and re-stage." >&2
+# --- Code quality: fmt + lint for detected languages ---
+# Detects languages by staged file suffix and runs the fmt + lint commands
+# configured in hook-rules.conf [lang_tools]. Docs-only commits (no source
+# suffix) skip every tool -- same fast path as the previous Rust-only gate.
+# shellcheck source=lang-detector.sh
+. "$HOOKS_DIR/lang-detector.sh"
+# shellcheck source=lang-runner.sh
+. "$HOOKS_DIR/lang-runner.sh"
+
+staged_files=$(git diff --cached --name-only --diff-filter=ACMR)
+if [ -n "$staged_files" ]; then
+    if ! run_all_langs_stage fmt "$staged_files"; then
         exit 1
     fi
-
-    echo "pre-commit: running cargo clippy --all-targets -- -D warnings" >&2
-    if ! cargo clippy --all-targets -- -D warnings; then
-        echo "pre-commit: reject" >&2
-        echo "  cargo clippy reported warnings. Fix them and re-stage." >&2
+    if ! run_all_langs_stage lint "$staged_files"; then
         exit 1
     fi
 fi

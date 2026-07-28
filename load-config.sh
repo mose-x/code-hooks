@@ -65,6 +65,36 @@ get_commit_types() {
     _section_lines commit_types
 }
 
+# Print the command for <lang>:<stage> from [lang_tools].
+# Line format in hook-rules.conf: `lang:stage=command`
+# Returns empty string if the section, lang, or stage is missing, or if
+# the value is intentionally empty (disabled stage).
+get_lang_tool() {
+    local lang="$1"
+    local stage="$2"
+    # Use awk with sub() to strip the `lang:stage=` prefix, leaving the
+    # rest of the line (which may contain `=` or `:`) as the command.
+    awk -v want_lang="$lang" -v want_stage="$stage" '
+        {
+            line = $0
+            # Split on first ":" to get "lang" and "stage=command".
+            colon = index(line, ":")
+            if (colon == 0) next
+            l = substr(line, 1, colon - 1)
+            rest = substr(line, colon + 1)
+            # Split rest on first "=" to get "stage" and "command".
+            eq = index(rest, "=")
+            if (eq == 0) next
+            s = substr(rest, 1, eq - 1)
+            cmd = substr(rest, eq + 1)
+            if (l == want_lang && s == want_stage) {
+                print cmd
+                exit
+            }
+        }
+    ' <(_section_lines lang_tools)
+}
+
 # Print the value for <key> from [rules]. Empty string if missing.
 get_rule() {
     local key="$1"
