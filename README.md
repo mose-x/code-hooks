@@ -123,6 +123,10 @@ Per-language fmt / lint / test commands. Format: `lang:stage=command`.
   separated, auto-quoted) so fmt/lint target only touched files. Commands
   that ignore `$FILES` (e.g. `cargo fmt --check`, `pytest`) scan the whole
   repo -- fine for most toolchains.
+- **`$FILES` must be used bare** -- do not wrap it in quotes
+  (e.g. `prettier --check "$FILES"`). Each path is already single-quoted
+  via `printf %q`, so the replacement expands to `'path1' 'path2' ...`; an
+  outer pair of quotes would break that into one literal argument.
 - **Empty value** (`lang:stage=`) disables that stage for that language
   (e.g. Java fmt/lint are intentionally empty: per-project style).
 - **Missing section** -> all language tools skipped (docs-only fast path;

@@ -112,9 +112,24 @@ fi
 
 # Rule 6: total message length (subject + body, excluding git comment lines
 # and trailing whitespace) must be <= max_total_message_length UTF-8 codepoints.
-# Python is used for correct UTF-8 codepoint counting (bash ${#var} depends
-# on locale; python3 len() counts codepoints unconditionally).
-total_len=$(sed '/^#/d' "$msg_file" | python3 -c 'import sys; print(len(sys.stdin.read().rstrip()))')
+# Python is preferred for correct UTF-8 codepoint counting (bash ${#var}
+# depends on locale; python3 len() counts codepoints unconditionally). Fall
+# back to `wc -m` under the C locale when python3 is absent (minimal Docker
+# images, etc.). `wc -m` in C locale counts bytes, which is a conservative
+# upper bound for multi-byte UTF-8 -> may reject borderline messages that
+# python3 would pass, but never lets an over-long message through.
+if command -v python3 >/dev/null 2>&1; then
+    total_len=$(sed '/^#/d' "$msg_file" | python3 -c 'import sys; print(len(sys.stdin.read().rstrip()))')
+else
+    # Reassemble without trailing newlines, rstrip trailing whitespace
+    # (matching python's rstrip), then count bytes under C locale. Bytes
+    # >= codepoints for UTF-8, so this is a conservative upper bound:
+    # never lets an over-long message through, may reject a borderline
+    # multi-byte one that python3 passes.
+    total_len=$(sed '/^#/d' "$msg_file" \
+        | awk 'NR>1{printf "\n"} {sub(/[[:space:]]+$/,""); printf "%s", $0}' \
+        | LC_ALL=C wc -m | awk '{print $1}')
+fi
 if [ "$total_len" -gt "$total_max" ]; then
     echo "commit-msg: reject" >&2
     echo "  total message is $total_len chars (max $total_max); subject+body must be terser" >&2
